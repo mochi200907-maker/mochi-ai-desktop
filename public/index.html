@@ -558,18 +558,18 @@
       isMediaPlaying = true;
       musicAudio = new Audio(url);
       musicAudio.preload = 'auto';
-      musicAudio.onended = () => { stopMusic(); isMediaPlaying = false; };
+      musicAudio.onended = () => { stopMusic(); setTimeout(() => { isMediaPlaying = false; }, 1500); };
       musicAudio.onerror = () => {
         const code = musicAudio?.error?.code;
         console.warn('Music audio error, code:', code);
         showError('Music playback error');
         stopMusic();
-        isMediaPlaying = false;
+        setTimeout(() => { isMediaPlaying = false; }, 1500);
       };
       musicAudio.play().catch(err => {
         showError('Music play: ' + err.message);
         stopMusic();
-        isMediaPlaying = false;
+        setTimeout(() => { isMediaPlaying = false; }, 1500);
       });
       musicPlaying = true;
       showTranscript('🎵 ' + title);
@@ -683,7 +683,9 @@
       }
       if (modal) modal.classList.remove('open');
       musicPlaying = false;
-      isMediaPlaying = false;
+      // Delay clearing isMediaPlaying so residual audio from the video end
+      // doesn't immediately trigger the VAD / STT pipeline.
+      setTimeout(() => { isMediaPlaying = false; }, 1500);
       if (currentExpression === 'MUSIC') currentExpression = 'IDLE';
     }
 
@@ -782,12 +784,15 @@
     let bleWriteQueue = Promise.resolve();
 
     function sendBLECommand(cmd) {
+      // Trim and normalise BEFORE the NONE check so a padded "NONE\r" or
+      // "NONE " doesn't slip past the guard and reach the ESP32.
+      cmd = String(cmd || '').trim().toUpperCase();
       if (!bleCharacteristic || !cmd || cmd === 'NONE') return Promise.resolve(false);
 
       // Queue writes: movement and LED commands are generated together, and
       // Web Bluetooth can reject/overlap a second write while the first one
       // is still in flight.
-      const bytes = new TextEncoder().encode(String(cmd).trim());
+      const bytes = new TextEncoder().encode(cmd);
       bleWriteQueue = bleWriteQueue
         .catch(() => false)
         .then(async () => {
@@ -849,9 +854,9 @@
     // We encode it as WAV (no codec negotiation) and POST to the server
     // which forwards to Groq Whisper.
     function initGroqSTT(source) {
-      const SPEECH_THRESHOLD   = 0.01;  // RMS threshold to start capturing
+      const SPEECH_THRESHOLD   = 0.025; // RMS threshold to start capturing (raised from 0.01 — reduces false triggers from ambient noise)
       const SILENCE_TIMEOUT_MS = 800;   // ms of quiet before sending clip
-      const MIN_SPEECH_MS      = 300;   // discard clips shorter than this
+      const MIN_SPEECH_MS      = 500;   // discard clips shorter than this (raised from 300ms)
       const SAMPLE_RATE        = audioCtx.sampleRate;
       const TARGET_RATE        = 16000; // Whisper only needs 16kHz — downsample to cut WAV size
 
@@ -859,6 +864,11 @@
       let speechStart  = 0;
       let silenceTimer = null;
       let pcmChunks    = [];
+
+      // Grace period: ignore mic input for 1.5 s after startup so the
+      // initial mic-open noise / breathing doesn't trigger a capture.
+      let vadReady = false;
+      setTimeout(() => { vadReady = true; }, 1500);
 
       // ScriptProcessorNode MUST be connected to a real destination node or
       // onaudioprocess never fires. createMediaStreamDestination() is a true
@@ -877,8 +887,8 @@
         const rms = Math.sqrt(sum / input.length);
         smoothedVolume = smoothedVolume * 0.7 + rms * 0.3;
 
-        // Muted while robot is talking / thinking / playing media
-        if (robotState === 'SPEAKING' || robotState === 'THINKING' || isMediaPlaying) {
+        // Muted during startup grace period, while robot is talking / thinking / playing media
+        if (!vadReady || robotState === 'SPEAKING' || robotState === 'THINKING' || isMediaPlaying) {
           if (isSpeaking) {
             clearTimeout(silenceTimer); silenceTimer = null;
             isSpeaking = false; pcmChunks = [];
