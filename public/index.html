@@ -1249,7 +1249,8 @@
       showTranscript('🎤 ' + text);
 
       try {
-        const chatRes = await fetch('/api/chat', {
+        // ── Streaming chat — fires BLE command the instant [[...]] tag closes ──
+        const chatRes = await fetch('/api/chat/stream', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ history: [{ role: 'user', content: text }] })
@@ -1259,21 +1260,45 @@
           robotState = 'IDLE';
           return;
         }
-        const { response } = await chatRes.json();
 
-        let cleaned = response.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+        const reader = chatRes.body.getReader();
+        const decoder = new TextDecoder();
+        let response = '';
+        let bleDispatched = false;
 
-        // ── Parse face+move+led tag ──
-        // Format: [[FACE:<expr>,MOVE:<action>,LED:<cmd>]]  (LED field optional)
-        const tagMatch = cleaned.match(/\[\[FACE:([A-Z]+),MOVE:([A-Z_]+)(?:,LED:([A-Z_]+))?\]\]/i);
-        if (tagMatch) {
-          currentExpression = tagMatch[1].toUpperCase();
-          const moveCmd = tagMatch[2].toUpperCase();
-          const ledCmd  = (tagMatch[3] || 'NONE').toUpperCase();
-          sendBLECommand(moveCmd);
-          if (ledCmd !== 'NONE') sendBLECommand(ledCmd);
-        } else {
-          currentExpression = 'HAPPY';
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          response += decoder.decode(value, { stream: true });
+
+          // Fire BLE the moment the [[...]] tag is complete in the stream
+          if (!bleDispatched) {
+            const earlyTag = response.match(/\[\[FACE:([A-Z]+),MOVE:([A-Z_]+)(?:,LED:([A-Z_]+))?\]\]/i);
+            if (earlyTag) {
+              bleDispatched = true;
+              currentExpression = earlyTag[1].toUpperCase();
+              const moveCmd = earlyTag[2].toUpperCase();
+              const ledCmd  = (earlyTag[3] || 'NONE').toUpperCase();
+              sendBLECommand(moveCmd);
+              if (ledCmd !== 'NONE') sendBLECommand(ledCmd);
+            }
+          }
+        }
+
+        let cleaned = response.trim();
+
+        // ── Parse face+move+led tag (fallback if somehow not fired during stream) ──
+        if (!bleDispatched) {
+          const tagMatch = cleaned.match(/\[\[FACE:([A-Z]+),MOVE:([A-Z_]+)(?:,LED:([A-Z_]+))?\]\]/i);
+          if (tagMatch) {
+            currentExpression = tagMatch[1].toUpperCase();
+            const moveCmd = tagMatch[2].toUpperCase();
+            const ledCmd  = (tagMatch[3] || 'NONE').toUpperCase();
+            sendBLECommand(moveCmd);
+            if (ledCmd !== 'NONE') sendBLECommand(ledCmd);
+          } else {
+            currentExpression = 'HAPPY';
+          }
         }
 
         // Trigger camera selfie sequence if Mochi chose CAMERA expression

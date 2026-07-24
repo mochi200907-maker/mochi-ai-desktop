@@ -795,6 +795,72 @@ app.post('/api/chat', async (req, res) => {
   }
 });
 
+// Streaming chat — sends chunks as newline-delimited JSON so the client can
+// fire BLE commands the instant the [[FACE:...]] tag closes at the start of
+// the response, without waiting for the full reply.
+app.post('/api/chat/stream', async (req, res) => {
+  try {
+    const { history } = req.body;
+    const fullMessages = [{ role: 'system', content: SYSTEM_PROMPT }, ...history];
+
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Transfer-Encoding', 'chunked');
+    res.setHeader('Cache-Control', 'no-cache');
+
+    let stream;
+    try {
+      stream = await getGroq().chat.completions.create({
+        messages: fullMessages,
+        model: 'qwen/qwen3-32b',
+        temperature: 0.6,
+        max_completion_tokens: 1024,
+        top_p: 0.95,
+        reasoning_effort: 'none',
+        stream: true,
+      });
+    } catch {
+      stream = await getGroq().chat.completions.create({
+        messages: fullMessages,
+        model: 'llama-3.3-70b-versatile',
+        temperature: 0.7,
+        max_completion_tokens: 1024,
+        top_p: 1,
+        stream: true,
+      });
+    }
+
+    let buffer = '';
+    let thinkOpen = false;
+    for await (const chunk of stream) {
+      let token = chunk.choices[0]?.delta?.content || '';
+      if (!token) continue;
+
+      // Strip <think>...</think> blocks on the fly
+      buffer += token;
+      if (buffer.includes('<think>')) thinkOpen = true;
+      if (thinkOpen) {
+        if (buffer.includes('</think>')) {
+          buffer = buffer.replace(/<think>[\s\S]*?<\/think>/gi, '');
+          thinkOpen = false;
+        } else {
+          continue; // still inside think block — don't emit yet
+        }
+      }
+
+      if (buffer) {
+        res.write(buffer);
+        buffer = '';
+      }
+    }
+    if (buffer) res.write(buffer);
+    res.end();
+  } catch (err) {
+    console.error('Stream Chat Error:', err.message);
+    if (!res.headersSent) res.status(500).json({ error: 'Chat failed' });
+    else res.end();
+  }
+});
+
 // Vision analysis — accepts a base64 image + original question, returns Mochi's observation
 app.post('/api/vision', async (req, res) => {
   try {
