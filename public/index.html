@@ -824,6 +824,13 @@
 
     async function initAudio() {
       audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+      // AudioContext starts suspended on Android even inside a user-gesture
+      // handler. Resume it explicitly so the analyser actually processes audio.
+      if (audioCtx.state === 'suspended') {
+        try { await audioCtx.resume(); } catch (_) {}
+      }
+
       // echoCancellation: false — critical for Android. When echoCancellation is true,
       // Android enters VOICE_COMMUNICATION mode which routes ALL audio output (TTS, music)
       // through the call volume stream with telephony noise reduction, making it sound like
@@ -835,11 +842,25 @@
           autoGainControl: true
         }
       });
+
       const source = audioCtx.createMediaStreamSource(micStream);
       analyser = audioCtx.createAnalyser();
       analyser.fftSize = 256;
       analyser.smoothingTimeConstant = 0.5;
+
+      // ── Android fix: route source → analyser → destination ──────
+      // 1. Connecting analyser to a destination prevents browsers from
+      //    optimising away the node (which makes getFloatTimeDomainData
+      //    return all-zeros).
+      // 2. createMediaStreamDestination() gives us a fresh MediaStream that
+      //    MediaRecorder can record cleanly — sharing the raw micStream
+      //    between AudioContext and MediaRecorder silences the recorder on
+      //    Android because the Web Audio graph consumes the track.
+      const dest = audioCtx.createMediaStreamDestination();
       source.connect(analyser);
+      analyser.connect(dest);
+      // Keep a reference so initMediaRecorderSTT can use it
+      audioCtx._recorderStream = dest.stream;
 
       monitorVolume();
       initSpeechRecognition();
@@ -937,105 +958,99 @@
       srStart();
     }
 
-    // ── MediaRecorder + VAD + Groq Whisper STT (Android fallback) ──
+    // ── MediaRecorder + VAD + Groq Whisper STT (Android) ──────────
     function initMediaRecorderSTT() {
-      // VAD thresholds — tuned for phone microphones
-      const SPEECH_THRESHOLD = 0.012;   // RMS level that counts as speech
-      const SILENCE_TIMEOUT_MS = 1500;  // ms of quiet before we send the clip
-      const MIN_SPEECH_MS = 350;        // ignore blips shorter than this
+      const SPEECH_THRESHOLD  = 0.012;  // RMS level that counts as voice
+      const SILENCE_TIMEOUT_MS = 1400;  // ms of quiet before clip is sent
+      const MIN_SPEECH_MS     = 300;    // discard clips shorter than this
 
-      let mediaRecorder = null;
-      let chunks = [];
-      let isSpeaking = false;
-      let speechStartTime = 0;
-      let silenceTimer = null;
+      let mediaRecorder  = null;
+      let chunks         = [];
+      let isSpeaking     = false;
+      let speechStart    = 0;
+      let silenceTimer   = null;
 
-      // Pick the best MIME type supported by this browser/device
+      // Use the Web-Audio destination stream, NOT the raw micStream.
+      // On Android, once micStream is consumed by createMediaStreamSource()
+      // the raw tracks are drained — MediaRecorder gets silence.
+      // audioCtx._recorderStream comes from createMediaStreamDestination()
+      // so it is always a fresh, recordable Web Audio output stream.
+      const recStream = audioCtx._recorderStream;
+
+      // Best MIME type for this device (Android Chrome supports webm/opus)
       const candidates = [
         'audio/webm;codecs=opus',
         'audio/webm',
         'video/webm;codecs=opus',
         'video/webm',
         'audio/mp4',
-        'audio/ogg;codecs=opus',
       ];
       let mimeType = '';
       for (const c of candidates) {
-        if (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(c)) {
-          mimeType = c; break;
-        }
+        if (MediaRecorder.isTypeSupported(c)) { mimeType = c; break; }
       }
-      console.log('[VAD-STT] using mimeType:', mimeType || '(browser default)');
+      console.log('[STT] mimeType:', mimeType || 'browser default');
 
       function startRecording() {
         if (mediaRecorder && mediaRecorder.state === 'recording') return;
         chunks = [];
         try {
-          mediaRecorder = new MediaRecorder(micStream, mimeType ? { mimeType } : {});
-        } catch (e) {
-          // Some Android builds don't accept the mimeType option at all
-          mediaRecorder = new MediaRecorder(micStream);
+          mediaRecorder = new MediaRecorder(recStream, mimeType ? { mimeType } : {});
+        } catch (_) {
+          mediaRecorder = new MediaRecorder(recStream);
         }
-        mediaRecorder.ondataavailable = e => { if (e.data && e.data.size > 0) chunks.push(e.data); };
-        mediaRecorder.onstop = sendToWhisper;
-        mediaRecorder.start(100); // 100 ms chunks so we get data even for short clips
-        speechStartTime = Date.now();
-        robotState = 'LISTENING';
+        mediaRecorder.ondataavailable = e => { if (e.data?.size > 0) chunks.push(e.data); };
+        mediaRecorder.onstop = sendToGroq;
+        mediaRecorder.start(100);
+        speechStart    = Date.now();
+        robotState     = 'LISTENING';
         showTranscript('🎤 …');
       }
 
       function stopRecording() {
-        if (mediaRecorder && mediaRecorder.state === 'recording') {
-          mediaRecorder.stop();
-        }
+        if (mediaRecorder && mediaRecorder.state === 'recording') mediaRecorder.stop();
       }
 
-      async function sendToWhisper() {
-        const duration = Date.now() - speechStartTime;
+      async function sendToGroq() {
+        const duration = Date.now() - speechStart;
         if (duration < MIN_SPEECH_MS || chunks.length === 0) {
-          // Too short — probably background noise
           if (robotState === 'LISTENING') robotState = 'IDLE';
           return;
         }
-        // Don't interrupt an active response
         if (robotState === 'SPEAKING' || robotState === 'THINKING' || isMediaPlaying) return;
 
         robotState = 'THINKING';
-        const blobType = mimeType || 'audio/webm';
-        const blob = new Blob(chunks, { type: blobType });
-        chunks = [];
+        const ct   = mimeType || 'audio/webm';
+        const blob = new Blob(chunks, { type: ct });
+        chunks     = [];
 
         try {
           const res = await fetch('/api/stt', {
             method: 'POST',
-            headers: { 'Content-Type': blobType },
+            headers: { 'Content-Type': ct },
             body: blob,
           });
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
-          const data = await res.json();
-          const text = (data.text || '').trim();
-          if (text) {
-            showTranscript(text);
-            handleSpeechResult(text);
+          const { text } = await res.json();
+          if (text?.trim()) {
+            showTranscript(text.trim());
+            handleSpeechResult(text.trim());
           } else {
             robotState = 'IDLE';
           }
         } catch (err) {
-          console.error('[VAD-STT] Whisper error:', err);
-          showError('STT failed — tap and speak again');
+          console.error('[STT] Groq error:', err);
           robotState = 'IDLE';
         }
       }
 
-      // VAD loop — piggybacks on the existing RMS analyser (same 80 ms cadence)
+      // VAD — runs every 80 ms, same cadence as monitorVolume()
       setInterval(() => {
         if (!analyser) return;
 
-        // While robot is speaking / thinking / media playing → discard any speech
         if (robotState === 'SPEAKING' || robotState === 'THINKING' || isMediaPlaying) {
           if (isSpeaking) {
-            clearTimeout(silenceTimer);
-            silenceTimer = null;
+            clearTimeout(silenceTimer); silenceTimer = null;
             isSpeaking = false;
             stopRecording();
           }
@@ -1045,24 +1060,18 @@
         const rms = getRMS();
 
         if (rms > SPEECH_THRESHOLD) {
-          // Sound detected
-          clearTimeout(silenceTimer);
-          silenceTimer = null;
-          if (!isSpeaking) {
-            isSpeaking = true;
-            startRecording();
-          }
+          clearTimeout(silenceTimer); silenceTimer = null;
+          if (!isSpeaking) { isSpeaking = true; startRecording(); }
         } else if (isSpeaking && !silenceTimer) {
-          // Gone quiet — wait SILENCE_TIMEOUT before cutting
           silenceTimer = setTimeout(() => {
             silenceTimer = null;
-            isSpeaking = false;
+            isSpeaking   = false;
             stopRecording();
           }, SILENCE_TIMEOUT_MS);
         }
       }, 80);
 
-      console.log('[VAD-STT] MediaRecorder STT active');
+      console.log('[STT] VAD+Groq Whisper active');
     }
 
     function handleSpeechResult(text) {
