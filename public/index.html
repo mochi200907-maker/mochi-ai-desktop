@@ -850,9 +850,10 @@
     // which forwards to Groq Whisper.
     function initGroqSTT(source) {
       const SPEECH_THRESHOLD   = 0.01;  // RMS threshold to start capturing
-      const SILENCE_TIMEOUT_MS = 1400;  // ms of quiet before sending clip
+      const SILENCE_TIMEOUT_MS = 800;   // ms of quiet before sending clip
       const MIN_SPEECH_MS      = 300;   // discard clips shorter than this
       const SAMPLE_RATE        = audioCtx.sampleRate;
+      const TARGET_RATE        = 16000; // Whisper only needs 16kHz — downsample to cut WAV size
 
       let isSpeaking   = false;
       let speechStart  = 0;
@@ -917,16 +918,21 @@
         if (robotState === 'SPEAKING' || robotState === 'THINKING' || isMediaPlaying) return;
         robotState = 'THINKING';
         try {
+          // Downsample to 16kHz — Whisper doesn't need 48kHz, cuts upload size 3x
+          const wav = encodeWAV(downsample(chunks, SAMPLE_RATE, TARGET_RATE), TARGET_RATE);
           const res = await fetch('/api/stt', {
             method: 'POST',
             headers: { 'Content-Type': 'audio/wav' },
-            body: encodeWAV(chunks, SAMPLE_RATE),
+            body: wav,
           });
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
           const { text } = await res.json();
           if (text?.trim()) {
             showTranscript(text.trim());
-            handleSpeechResult(text.trim());
+            // Don't go through handleSpeechResult — it guards against THINKING state
+            // and robotState is still THINKING here. Call processChat directly.
+            resetInactivityTimer();
+            processChat(text.trim());
           } else {
             robotState = 'IDLE';
           }
@@ -937,6 +943,27 @@
       }
 
       console.log('[STT] Groq Whisper ready, sampleRate:', SAMPLE_RATE);
+    }
+
+    // Downsample Float32Array chunks from srcRate → dstRate using linear interpolation.
+    function downsample(chunks, srcRate, dstRate) {
+      if (srcRate === dstRate) return chunks;
+      const totalIn = chunks.reduce((s, c) => s + c.length, 0);
+      const flat    = new Float32Array(totalIn);
+      let off = 0;
+      for (const c of chunks) { flat.set(c, off); off += c.length; }
+      const ratio   = srcRate / dstRate;
+      const outLen  = Math.floor(totalIn / ratio);
+      const out     = new Float32Array(outLen);
+      for (let i = 0; i < outLen; i++) {
+        const pos = i * ratio;
+        const idx = Math.floor(pos);
+        const frac = pos - idx;
+        const a = flat[idx]     ?? 0;
+        const b = flat[idx + 1] ?? 0;
+        out[i] = a + frac * (b - a);
+      }
+      return [out]; // single chunk
     }
 
     // Build a 16-bit mono WAV blob from an array of Float32Array PCM chunks.
