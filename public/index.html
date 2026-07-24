@@ -599,19 +599,15 @@
         showError('Video URL is not valid');
         return;
       }
-      const isTikTok = provider === 'tiktok';
-      if (isTikTok) {
-        // Use TikTok's official embed iframe — no CORS, no server-side fetching needed
-        tiktokVideo.pause();
-        tiktokVideo.removeAttribute('src');
+      const isShortVideo = provider === 'tiktok' || provider === 'shoti';
+      if (isShortVideo) {
+        // Play TikTok / Shoti via direct MP4 in the portrait <video> element
+        frame.src = 'about:blank';
+        frame.style.display = 'none';
+        tiktokVideo.style.display = 'block';
+        tiktokVideo.src = url;
         tiktokVideo.load();
-        tiktokVideo.style.display = 'none';
-        // Switch iframe to portrait 9:16 for TikTok
-        frame.style.aspectRatio = '9 / 16';
-        frame.style.width = 'min(94vw, calc((100dvh - 112px) * 9 / 16), 420px)';
-        frame.style.maxHeight = 'calc(100dvh - 112px)';
-        frame.style.display = 'block';
-        frame.src = url; // tiktok.com/embed/v2/{id}
+        tiktokVideo.play().catch(() => {});
       } else {
         const id = youtubeId(url);
         if (!id) {
@@ -1104,6 +1100,7 @@
         let musicQuery = null;
         let videoQuery = null;
         let tiktokQuery = null;
+        let shotiQuery = false;
         const musicMatch = cleanText.match(/\nMUSIC_QUERY:\s*(.+)/i) || cleanText.match(/MUSIC_QUERY:\s*(.+)/i);
         if (musicMatch) {
           musicQuery = musicMatch[1].trim();
@@ -1119,12 +1116,23 @@
           tiktokQuery = tiktokMatch[1].trim();
           cleanText = cleanText.replace(/\n?TIKTOK_QUERY:.+/i, '').trim();
         }
-        const asksForTikTok = /\b(tiktok|tik tok|shot[io]?|short video|girl video|reels?)\b/i.test(text);
-        if (asksForTikTok && !tiktokQuery) {
+        if (/SHOTI_QUERY/i.test(cleanText)) {
+          shotiQuery = true;
+          cleanText = cleanText.replace(/\n?SHOTI_QUERY:.*/gi, '').trim();
+        }
+        const asksForShoti = /\b(shot[io]|shoti|short video|girl video)\b/i.test(text);
+        const asksForTikTok = /\b(tiktok|tik tok|reels?)\b/i.test(text);
+        if (asksForShoti && !shotiQuery && !tiktokQuery) {
+          shotiQuery = true;
+          videoQuery = null;
+          musicQuery = null;
+        }
+        if (asksForTikTok && !tiktokQuery && !shotiQuery) {
           tiktokQuery = videoQuery || musicQuery || text;
           videoQuery = null;
           musicQuery = null;
         }
+        if (shotiQuery) { tiktokQuery = null; videoQuery = null; musicQuery = null; }
         if (tiktokQuery) {
           videoQuery = null;
           musicQuery = null;
@@ -1161,6 +1169,13 @@
         if (tiktokQuery) {
           showTranscript('📱 Finding TikTok: ' + tiktokQuery);
           tiktokUrlPromise = fetch('/api/tiktok/url?q=' + encodeURIComponent(tiktokQuery))
+            .then(r => r.ok ? r.json() : Promise.reject('not found'))
+            .catch(() => null);
+        }
+        let shotiUrlPromise = null;
+        if (shotiQuery) {
+          showTranscript('🎀 Fetching shoti...');
+          shotiUrlPromise = fetch('/api/shoti/url')
             .then(r => r.ok ? r.json() : Promise.reject('not found'))
             .catch(() => null);
         }
@@ -1262,6 +1277,22 @@
           } catch (err) {
             console.warn('TikTok failed:', err.message);
             showError('Could not find that TikTok video');
+            currentExpression = 'IDLE';
+          }
+        }
+
+        if (shotiQuery && shotiUrlPromise) {
+          try {
+            const info = await shotiUrlPromise;
+            if (info?.url) {
+              playVideoUrl(info.title || 'Shoti', info.url, 'shoti');
+            } else {
+              showError('Could not get shoti video');
+              currentExpression = 'IDLE';
+            }
+          } catch (err) {
+            console.warn('Shoti failed:', err.message);
+            showError('Could not get shoti video');
             currentExpression = 'IDLE';
           }
         }

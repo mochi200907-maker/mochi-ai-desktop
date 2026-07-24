@@ -1,0 +1,146 @@
+const express = require("express");
+const axios = require("axios");
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+// 🔑 Groq API Configuration
+const GROQ_KEY = "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";
+const MODEL = "groq/compound";
+
+// 🧠 Memory per UID
+let chatMemory = new Map();
+
+// 🔁 Auto-reset all memory every 1 hour
+setInterval(() => {
+  console.log("🧹 Auto-resetting all chat memory...");
+  chatMemory = new Map();
+}, 60 * 60 * 1000);
+
+// 🌍 Global UTF-8 Fix
+app.use((req, res, next) => {
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  next();
+});
+
+// ✨ Convert **bold** to fancy font
+function toFancy(text) {
+  const normal = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+  const fancy = [
+    ..."𝓐𝓑𝓒𝓓𝓔𝓕𝓖𝓗𝓘𝓙𝓚𝓛𝓜𝓝𝓞𝓟𝓠𝓡𝓢𝓣𝓤𝓥𝓦𝓧𝓨𝓩𝓪𝓫𝓬𝓭𝓮𝓯𝓰𝓱𝓲𝓳𝓴𝓵𝓶𝓷𝓸𝓹𝓺𝓻𝓼𝓽𝓾𝓿𝔀𝔁𝔂𝔃"
+  ];
+
+  return [...text].map(c => {
+    const i = normal.indexOf(c);
+    return i !== -1 ? fancy[i] : c;
+  }).join("");
+}
+
+// 🗣️ Endpoint: /api/GPT5?prompt=&uid=&name=
+app.get("/api/GPT5", async (req, res) => {
+  try {
+    const { prompt, uid, name } = req.query;
+    if (!prompt || !uid) {
+      return res.status(400).json({ error: "Missing prompt or uid" });
+    }
+
+    const userName = name?.trim() || "Unknown";
+
+    // 🧠 System prompt
+    const systemPrompt = `
+You are ChatGPT, based on the GPT-5 model — a highly advanced reasoning, coding, and web research AI assistant.
+
+You respond naturally, helpfully, and conversationally with clear explanations.
+
+When you perform a web search or cite online sources, include:
+🌐sources:
+example.com
+wikipedia.com
+(each source on a new line)
+`;
+
+    // 💾 Memory handling
+    if (!chatMemory.has(uid)) {
+      chatMemory.set(uid, { history: [], lastUsed: Date.now(), name: userName });
+    }
+
+    const userData = chatMemory.get(uid);
+    userData.lastUsed = Date.now();
+    userData.name = userName;
+
+    // 💬 Add user message
+    userData.history.push({ role: "user", content: prompt });
+    if (userData.history.length > 20) {
+      userData.history = userData.history.slice(-20);
+    }
+
+    const messages = [
+      { role: "system", content: systemPrompt },
+      ...userData.history,
+    ];
+
+    // 🚀 Call Groq API
+    const response = await axios.post(
+      "https://api.groq.com/openai/v1/chat/completions",
+      {
+        model: MODEL,
+        messages,
+        temperature: 0.7,
+        max_completion_tokens: 512,
+        compound_custom: {
+          tools: {
+            enabled_tools: ["web_search", "code_interpreter", "visit_website"],
+          },
+        },
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${GROQ_KEY}`,
+          "Content-Type": "application/json",
+          "Groq-Model-Version": "latest",
+        },
+      }
+    );
+
+    // 🧩 Extract reply
+    let reply =
+      response.data?.choices?.[0]?.message?.content?.trim() ||
+      "Wala akong makitang sagot.";
+
+    // ✨ Fancy bold words
+    reply = reply.replace(/\*\*(.*?)\*\*/g, (_, word) => toFancy(word));
+
+    // Clean minimal symbols
+    reply = reply.replace(/[?!@&]/g, "").trim();
+
+    // 🧠 Save assistant reply
+    userData.history.push({ role: "assistant", content: reply });
+
+    // ✅ Send UTF-8 safe response
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    res.end(JSON.stringify({
+      success: true,
+      reply,
+      uid,
+      name: userName,
+      memoryCount: userData.history.length
+    }));
+
+  } catch (error) {
+    console.error("❌ Error in /api/GPT5:", error.response?.data || error.message);
+    res.status(500).end(JSON.stringify({
+      error: "Failed to contact Groq API",
+      details: error.response?.data || error.message
+    }));
+  }
+});
+
+// 🏠 Root endpoint
+app.get("/", (req, res) => {
+  res.send("✅ GPT-5 API is running — use /api/GPT5?prompt=&uid=&name=");
+});
+
+// 🚀 Start server
+app.listen(PORT, () => {
+  console.log(`🚀 ChatGPT-5 API running at http://localhost:${PORT}`);
+});

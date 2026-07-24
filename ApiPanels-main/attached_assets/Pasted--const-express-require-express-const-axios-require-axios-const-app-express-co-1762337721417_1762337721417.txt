@@ -1,0 +1,87 @@
+
+const express = require("express");
+const axios = require("axios");
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+async function searchWikipediaImages(query, limit = 5) {
+  try {
+    // Step 1: Search articles
+    const searchRes = await axios.get("https://en.wikipedia.org/w/api.php", {
+      params: {
+        action: "query",
+        list: "search",
+        srsearch: query,
+        format: "json"
+      }
+    });
+
+    if (!searchRes.data.query.search.length) {
+      return [];
+    }
+
+    const pageTitle = searchRes.data.query.search[0].title;
+
+    // Step 2: Get images of page
+    const imagesRes = await axios.get("https://en.wikipedia.org/w/api.php", {
+      params: {
+        action: "query",
+        titles: pageTitle,
+        prop: "images",
+        imlimit: limit,
+        format: "json"
+      }
+    });
+
+    const pages = imagesRes.data.query.pages;
+    const imageTitles = [];
+    for (const pageId in pages) {
+      const page = pages[pageId];
+      if (page.images) {
+        page.images.forEach(img => imageTitles.push(img.title));
+      }
+    }
+
+    // Step 3: Get actual image URLs
+    const urlsRes = await axios.get("https://en.wikipedia.org/w/api.php", {
+      params: {
+        action: "query",
+        titles: imageTitles.join("|"),
+        prop: "imageinfo",
+        iiprop: "url",
+        format: "json"
+      }
+    });
+
+    const urls = [];
+    for (const pageId in urlsRes.data.query.pages) {
+      const imgPage = urlsRes.data.query.pages[pageId];
+      if (imgPage.imageinfo) {
+        urls.push(imgPage.imageinfo[0].url);
+      }
+    }
+
+    return urls.slice(0, limit);
+  } catch (err) {
+    console.error(err);
+    return [];
+  }
+}
+
+// API Route
+app.get("/wikipedia", async (req, res) => {
+  const query = req.query.query;
+  const limit = parseInt(req.query.limit) || 5;
+
+  if (!query) {
+    return res.status(400).json({ error: "Missing query parameter" });
+  }
+
+  const images = await searchWikipediaImages(query, limit);
+  res.json({ query, images });
+});
+
+app.listen(PORT, () => {
+  console.log(`✅ Server running on http://localhost:${PORT}`);
+});

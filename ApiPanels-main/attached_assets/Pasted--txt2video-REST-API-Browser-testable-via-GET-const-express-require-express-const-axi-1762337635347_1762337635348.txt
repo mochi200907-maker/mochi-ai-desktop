@@ -1,0 +1,82 @@
+
+// ✅ txt2video REST API (Browser-testable via GET)
+const express = require('express');
+const axios = require('axios');
+const cors = require('cors');
+
+const app = express();
+app.use(cors());
+
+// --- Core text-to-video function ---
+async function txt2video(prompt) {
+  try {
+    const { data: step1 } = await axios.post('https://soli.aritek.app/txt2videov3', {
+      deviceID: Math.random().toString(16).substr(2, 8) + Math.random().toString(16).substr(2, 8),
+      prompt,
+      used: [],
+      versionCode: 51,
+    }, {
+      headers: {
+        authorization: 'eyJzdWIiwsdeOiIyMzQyZmczNHJ0MzR0weMzQiLCJuYW1lIjorwiSm9objMdf0NTM0NT',
+        'content-type': 'application/json; charset=utf-8',
+        'accept-encoding': 'gzip',
+        'user-agent': 'okhttp/4.11.0',
+      },
+    });
+
+    const { data: step2 } = await axios.post('https://soli.aritek.app/video', {
+      keys: [step1.key],
+    }, {
+      headers: {
+        authorization: 'eyJzdWIiwsdeOiIyMzQyZmczNHJ0MzR0weMzQiLCJuYW1lIjorwiSm9objMdf0NTM0NT',
+        'content-type': 'application/json; charset=utf-8',
+        'accept-encoding': 'gzip',
+        'user-agent': 'okhttp/4.11.0',
+      },
+    });
+
+    return step2.datas?.[0]?.url || null;
+  } catch (err) {
+    throw new Error(err.message);
+  }
+}
+
+// --- Browser-testable GET endpoint ---
+app.get('/api/txt2video', async (req, res) => {
+  const { prompt } = req.query;
+  if (!prompt) {
+    return res.status(400).json({
+      success: false,
+      message: 'Missing ?prompt= query parameter',
+    });
+  }
+
+  try {
+    const videoUrl = await txt2video(prompt);
+    res.json({
+      author: "April Manalo",
+      success: true,
+      prompt,
+      videoUrl,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: 'Error generating video',
+      error: error.message,
+    });
+  }
+});
+
+// --- Root route ---
+app.get('/', (req, res) => {
+  res.json({
+    name: 'txt2video-api',
+    description: 'Text-to-video REST API',
+    example: 'https://txt2video-ylqq.onrender.com/api/txt2video?prompt=A+pixel+art+queen+on+her+throne',
+  });
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`✅ API running on port ${PORT}`));

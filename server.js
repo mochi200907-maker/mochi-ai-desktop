@@ -221,13 +221,6 @@ function isTikTokUrl(value) {
   return /^https?:\/\/(?:www\.)?(?:tiktok\.com|vt\.tiktok\.com|vm\.tiktok\.com)\//i.test(value || '');
 }
 
-// Extract TikTok video ID from a tikwm media URL and build the official embed URL.
-// tikwm URLs embed the numeric video ID in the path: /video/media/play/<ID>.mp4
-function tikTokEmbedUrl(tikwmUrl) {
-  const m = tikwmUrl?.match(/\/(\d{10,20})(?:\.mp4)?$/);
-  return m ? `https://www.tiktok.com/embed/v2/${m[1]}` : null;
-}
-
 async function fetchTikTokByUrl(url) {
   try {
     const response = await fetch(
@@ -240,11 +233,11 @@ async function fetchTikTokByUrl(url) {
     if (!response.ok) return null;
     const body = await response.json();
     const data = body?.data;
-    const playableUrl = absoluteTikwmUrl(data?.hdplay || data?.play || data?.wmplay);
-    if (body?.code !== 0 || !playableUrl) return null;
-    const embedUrl = tikTokEmbedUrl(playableUrl);
+    // Use direct MP4 play URL from TikWM — no embed iframe needed
+    const playUrl = absoluteTikwmUrl(data?.play || data?.hdplay || data?.wmplay);
+    if (body?.code !== 0 || !playUrl) return null;
     return {
-      url: embedUrl || playableUrl,
+      url: playUrl,
       title: data.title || 'TikTok video',
       thumbnail: absoluteTikwmUrl(data.cover) || '',
       provider: 'tiktok',
@@ -265,18 +258,63 @@ async function searchTikTok(query) {
     });
     if (!response.ok) return null;
     const body = await response.json();
-    const first = body?.data?.videos?.find(video =>
-      absoluteTikwmUrl(video?.hdplay || video?.play || video?.wmplay),
+    const videos = body?.data?.videos?.filter(v =>
+      absoluteTikwmUrl(v?.play || v?.hdplay || v?.wmplay),
     );
-    if (body?.code !== 0 || !first) return null;
-    const rawUrl = absoluteTikwmUrl(first.hdplay || first.play || first.wmplay);
-    const embedUrl = tikTokEmbedUrl(rawUrl);
+    if (body?.code !== 0 || !videos?.length) return null;
+    // Pick a random result for variety (same as ApiPanels reference)
+    const pick = videos[Math.floor(Math.random() * videos.length)];
+    const playUrl = absoluteTikwmUrl(pick.play || pick.hdplay || pick.wmplay);
     return {
-      url: embedUrl || rawUrl,
-      title: first.title || query,
-      thumbnail: absoluteTikwmUrl(first.cover) || '',
+      url: playUrl,
+      title: pick.title || query,
+      thumbnail: absoluteTikwmUrl(pick.cover) || '',
       provider: 'tiktok',
-      author: first.author?.nickname || '',
+      author: pick.author?.nickname || '',
+    };
+  } catch {
+    return null;
+  }
+}
+
+// ── Shoti ─────────────────────────────────────────────────────
+// Shoti — random short girl/dance videos via TikWM search.
+// We rotate through several shoti-style search terms so each request
+// feels fresh, matching the spirit of the original Shoti API.
+const SHOTI_KEYWORDS = [
+  'pinay dance',
+  'cute girl dance tiktok',
+  'girl dance viral',
+  'pinay viral tiktok',
+  'cute girl trending',
+  'girl dance short',
+  'pinay tiktok viral 2024',
+  'cute pinay dance',
+];
+async function fetchShoti() {
+  try {
+    // Pick a random keyword set for variety
+    const kw = SHOTI_KEYWORDS[Math.floor(Math.random() * SHOTI_KEYWORDS.length)];
+    const url = `${TIKWM_BASE}/api/feed/search?keywords=${encodeURIComponent(kw)}&count=20&cursor=0&web=1`;
+    const response = await fetch(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json' },
+      signal: AbortSignal.timeout(20000),
+    });
+    if (!response.ok) return null;
+    const body = await response.json();
+    const videos = body?.data?.videos?.filter(v =>
+      absoluteTikwmUrl(v?.play || v?.hdplay || v?.wmplay),
+    );
+    if (body?.code !== 0 || !videos?.length) return null;
+    // Pick a random one so every shoti request feels different
+    const pick = videos[Math.floor(Math.random() * videos.length)];
+    const playUrl = absoluteTikwmUrl(pick.play || pick.hdplay || pick.wmplay);
+    return {
+      url: playUrl,
+      title: pick.title || 'Shoti',
+      thumbnail: absoluteTikwmUrl(pick.cover) || '',
+      provider: 'shoti',
+      author: pick.author?.nickname || '',
     };
   } catch {
     return null;
@@ -351,11 +389,14 @@ CRITICAL INSTRUCTIONS:
     - If the user asks to watch a YouTube video, music video, videoclip, or says "show me" a video,
      use FACE:MUSIC and add:
      VIDEO_QUERY: <search terms for the video>
-    - If the user asks for TikTok, a short video, "shot/i", "girl video", or names a TikTok creator/topic,
+    - If the user asks for TikTok or names a TikTok creator/topic,
       use FACE:MUSIC and add:
       TIKTOK_QUERY: <TikTok search terms>
-      Use TIKTOK_QUERY for requests like "give me a shoti", "give me a girl video",
-      or "search Joshua Garcia TikTok video". Do not use VIDEO_QUERY for those requests.
+      Do not use VIDEO_QUERY for TikTok requests.
+    - If the user asks for "shoti", "short video", "girl video", "random shoti", or similar,
+      use FACE:MUSIC and add:
+      SHOTI_QUERY: yes
+      This fetches a random short Shoti video. Do NOT use TIKTOK_QUERY or VIDEO_QUERY for shoti.
    - Never add both MUSIC_QUERY and VIDEO_QUERY. The user's requested media type must win.
    Example full audio response:
    [[FACE:MUSIC,MOVE:NONE,LED:LED_PURPLE]] On it! Playing Despacito for you!
@@ -366,6 +407,9 @@ CRITICAL INSTRUCTIONS:
   Example full TikTok response:
    [[FACE:MUSIC,MOVE:NONE,LED:LED_PINK]] Sure! Here's a TikTok video.
    TIKTOK_QUERY: Joshua Garcia TikTok
+  Example full Shoti response:
+   [[FACE:MUSIC,MOVE:NONE,LED:LED_PINK]] Sige, eto na ang shoti para sa iyo!
+   SHOTI_QUERY: yes
 5. Never include [[...]] anywhere else in your response — only at the very start.
 6. VISION RULE: When the user asks anything that requires seeing them — like how they look,
    what they're wearing, their outfit, their face, what's in front of the camera, or anything
@@ -503,8 +547,7 @@ app.get('/api/video/url', async (req, res) => {
 });
 
 // TikTok URL — searches TikWM by keyword or resolves a supplied TikTok link.
-// Returns the official TikTok embed URL (tiktok.com/embed/v2/{id}) so the browser
-// can display it in an iframe without any CORS or server-side fetch issues.
+// Returns a direct MP4 play URL from TikWM so the browser plays it natively.
 app.get('/api/tiktok/url', async (req, res) => {
   const q = req.query.q?.trim();
   if (!q) return res.status(400).json({ error: 'q param required' });
@@ -516,6 +559,19 @@ app.get('/api/tiktok/url', async (req, res) => {
   } catch (err) {
     console.error('TikTok URL error:', err.message);
     res.status(500).json({ error: 'TikTok search failed' });
+  }
+});
+
+// Shoti URL — fetches a random short video from the Shoti API.
+app.get('/api/shoti/url', async (req, res) => {
+  try {
+    const result = await fetchShoti();
+    if (!result) return res.status(404).json({ error: 'Shoti video not found' });
+    console.log(`[Shoti] resolved: ${result.title} → ${result.url}`);
+    res.json(result);
+  } catch (err) {
+    console.error('Shoti URL error:', err.message);
+    res.status(500).json({ error: 'Shoti fetch failed' });
   }
 });
 
@@ -689,6 +745,7 @@ wss.on('connection', (ws) => {
         let musicQuery = null;
         let videoQuery = null;
         let tiktokQuery = null;
+        let shotiQuery = false;
         const musicMatch = cleanText.match(/\nMUSIC_QUERY:\s*(.+)/i) || cleanText.match(/MUSIC_QUERY:\s*(.+)/i);
         if (musicMatch) {
           musicQuery = musicMatch[1].trim();
@@ -704,29 +761,38 @@ wss.on('connection', (ws) => {
           tiktokQuery = tiktokMatch[1].trim();
           cleanText = cleanText.replace(/\n?TIKTOK_QUERY:.+/i, '').trim();
         }
-        const asksForTikTok = /\b(tiktok|tik tok|shot[io]?|short video|girl video|reels?)\b/i.test(userText);
+        if (/SHOTI_QUERY/i.test(cleanText)) {
+          shotiQuery = true;
+          cleanText = cleanText.replace(/\n?SHOTI_QUERY:.*/gi, '').trim();
+        }
+        const asksForShoti = /\b(shot[io]|shoti|short video|girl video)\b/i.test(userText);
+        const asksForTikTok = /\b(tiktok|tik tok|reels?)\b/i.test(userText);
         const asksForVideo = /\b(video|music video|videoclip|video clip|watch|panoorin|manood)\b/i.test(userText);
-        if (asksForTikTok && !tiktokQuery) {
+        // Fallback: detect shoti/tiktok from user text when LLM didn't tag it
+        if (asksForShoti && !shotiQuery && !tiktokQuery) {
+          shotiQuery = true;
+          videoQuery = null;
+          musicQuery = null;
+        }
+        if (asksForTikTok && !tiktokQuery && !shotiQuery) {
           tiktokQuery = videoQuery || musicQuery || userText;
           videoQuery = null;
           musicQuery = null;
         }
-        if (tiktokQuery) {
-          videoQuery = null;
-          musicQuery = null;
-        }
+        if (shotiQuery) { tiktokQuery = null; videoQuery = null; musicQuery = null; }
+        if (tiktokQuery) { videoQuery = null; musicQuery = null; }
         if (asksForVideo && musicQuery && !videoQuery) {
           videoQuery = musicQuery;
           musicQuery = null;
         }
-        if (videoQuery || tiktokQuery) musicQuery = null;
+        if (videoQuery || tiktokQuery || shotiQuery) musicQuery = null;
 
         // TTS spoken text
         if (cleanText) {
           send('STATE:SPEAKING');
           const ttsBuffer = await generateTTSBuffer(cleanText);
           send(`TTS:${ttsBuffer.toString('base64')}`);
-          if (musicQuery || videoQuery || tiktokQuery) await new Promise(r => setTimeout(r, 1200));
+          if (musicQuery || videoQuery || tiktokQuery || shotiQuery) await new Promise(r => setTimeout(r, 1200));
         }
 
         // Audio-only music search + stream URL
@@ -765,6 +831,20 @@ wss.on('connection', (ws) => {
             send(`VIDEO_TITLE:${tiktok.title}`);
             send(`VIDEO_PROVIDER:${tiktok.provider}`);
             send(`VIDEO_URL:${tiktok.url}`);
+            send('STATE:PLAYING_VIDEO');
+          } else {
+            send('ERROR:VIDEO_NOT_FOUND');
+            send('STATE:IDLE');
+          }
+        } else if (shotiQuery) {
+          console.log(`[WS:${cid}] shoti: fetching random short video`);
+          send('STATE:SEARCHING_VIDEO');
+          const shoti = await fetchShoti();
+          if (shoti) {
+            console.log(`[WS:${cid}] found Shoti: ${shoti.title}`);
+            send(`VIDEO_TITLE:${shoti.title}`);
+            send(`VIDEO_PROVIDER:${shoti.provider}`);
+            send(`VIDEO_URL:${shoti.url}`);
             send('STATE:PLAYING_VIDEO');
           } else {
             send('ERROR:VIDEO_NOT_FOUND');
