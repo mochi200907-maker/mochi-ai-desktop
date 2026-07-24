@@ -551,19 +551,29 @@
     // simulated animation instead of a real analyser.
     let musicAudio = null;
     let musicPlaying = false;
+    let isMediaPlaying = false; // true while any video or music is playing — blocks STT auto-restart
 
     function playMusicUrl(title, url) {
       stopMusic();
+      isMediaPlaying = true;
+      srStop();
       musicAudio = new Audio(url);
       musicAudio.preload = 'auto';
-      musicAudio.onended = () => stopMusic();
+      musicAudio.onended = () => { stopMusic(); isMediaPlaying = false; setTimeout(srStart, 300); };
       musicAudio.onerror = () => {
         const code = musicAudio?.error?.code;
         console.warn('Music audio error, code:', code);
         showError('Music playback error');
         stopMusic();
+        isMediaPlaying = false;
+        setTimeout(srStart, 300);
       };
-      musicAudio.play().catch(err => { showError('Music play: ' + err.message); stopMusic(); });
+      musicAudio.play().catch(err => {
+        showError('Music play: ' + err.message);
+        stopMusic();
+        isMediaPlaying = false;
+        setTimeout(srStart, 300);
+      });
       musicPlaying = true;
       showTranscript('🎵 ' + title);
       currentExpression = 'MUSIC';
@@ -576,6 +586,7 @@
         musicAudio = null;
       }
       musicPlaying = false;
+      // Note: do NOT clear isMediaPlaying here — callers (playVideoUrl, onended) manage it.
       if (currentExpression === 'MUSIC') currentExpression = 'IDLE';
     }
 
@@ -601,13 +612,38 @@
       }
       const isShortVideo = provider === 'tiktok' || provider === 'shoti';
       if (isShortVideo) {
-        // Play TikTok / Shoti via direct MP4 in the portrait <video> element
         frame.src = 'about:blank';
         frame.style.display = 'none';
         tiktokVideo.style.display = 'block';
-        tiktokVideo.src = url;
+
+        // <video> fetches cross-origin media natively — no CORS headers needed.
+        // Try the direct TikWM URL first; fall back to the server download on error.
+        tiktokVideo.onended = () => stopVideo();
+        tiktokVideo.onerror = () => {
+          const code = tiktokVideo.error?.code;
+          console.warn('TikTok direct play failed (code', code, '), trying server download…');
+          // Try once via server download endpoint which re-fetches a fresh URL
+          const fallbackSrc = '/api/video/download?url=' + encodeURIComponent(url);
+          if (tiktokVideo.src !== fallbackSrc) {
+            tiktokVideo.onerror = () => {
+              console.warn('TikTok server download also failed');
+              showError('Video unavailable — try another');
+              stopVideo();
+            };
+            tiktokVideo.src = fallbackSrc;
+            tiktokVideo.load();
+            tiktokVideo.play().catch(() => { showError('Video unavailable — try another'); stopVideo(); });
+          } else {
+            showError('Video unavailable — try another');
+            stopVideo();
+          }
+        };
+        tiktokVideo.src = url;          // direct TikWM URL — fastest path
         tiktokVideo.load();
-        tiktokVideo.play().catch(() => {});
+        tiktokVideo.play().catch(err => {
+          console.warn('TikTok play() rejected:', err.message);
+          // autoplay policy or missing src — onerror will handle the fallback
+        });
       } else {
         const id = youtubeId(url);
         if (!id) {
@@ -624,7 +660,8 @@
       }
       if (label) label.textContent = title || 'Playing video';
       modal.classList.add('open');
-      musicPlaying = true; // pause VAD while video audio is playing
+      musicPlaying = true;    // pause VAD while video audio is playing
+      isMediaPlaying = true;  // block STT auto-restart until video ends
       currentExpression = 'MUSIC';
       showTranscript('🎬 ' + (title || 'Playing video'));
       srStop(); // stop listening while video is playing
@@ -650,6 +687,7 @@
       }
       if (modal) modal.classList.remove('open');
       musicPlaying = false;
+      isMediaPlaying = false;
       if (currentExpression === 'MUSIC') currentExpression = 'IDLE';
       srStart(); // resume listening after video is closed
     }
@@ -688,8 +726,8 @@
 
     let audioCtx, analyser, micStream;
 
-    // ── Wake word state ───────────────────────────────────────────
-    let wakeWordMode = true;         // true = waiting for "mochi" / "hey mochi"
+    // Wake word mode removed — STT is always active
+    let wakeWordMode = false;
     let inactivityTimer = null;
     const INACTIVITY_MS = 2 * 60 * 1000;  // 2 minutes
 
@@ -805,8 +843,6 @@
 
       monitorVolume();
       initSpeechRecognition();
-      // Show wake word hint on startup
-      setTimeout(() => showTranscript('💤 Say "Hey Mochi" to wake me up'), 800);
     }
 
     function getRMS() {
@@ -817,13 +853,11 @@
       return Math.sqrt(sum / buf.length);
     }
 
-    // ── Web Speech Recognition + Wake Word ───────────────────────
+    // ── Web Speech Recognition ────────────────────────────────────
     function resetInactivityTimer() {
       clearTimeout(inactivityTimer);
       inactivityTimer = setTimeout(() => {
-        wakeWordMode = true;
         robotState = 'IDLE';
-        showTranscript('💤 Say "Hey Mochi" to wake me up');
       }, INACTIVITY_MS);
     }
 
@@ -852,8 +886,8 @@
       recognition.onstart = () => { srRunning = true; };
       recognition.onend   = () => {
         srRunning = false;
-        // Auto-restart unless TTS/LLM pipeline is active
-        if (robotState !== 'SPEAKING' && robotState !== 'THINKING') {
+        // Auto-restart unless TTS/LLM pipeline is active OR media is playing
+        if (robotState !== 'SPEAKING' && robotState !== 'THINKING' && !isMediaPlaying) {
           setTimeout(srStart, 250);
         }
       };
@@ -863,8 +897,8 @@
           showError('Microphone access denied');
           return;
         }
-        // no-speech / aborted are expected; restart quietly
-        if (robotState !== 'SPEAKING' && robotState !== 'THINKING') {
+        // no-speech / aborted are expected; restart quietly — but not while media plays
+        if (robotState !== 'SPEAKING' && robotState !== 'THINKING' && !isMediaPlaying) {
           setTimeout(srStart, 500);
         }
       };
@@ -880,8 +914,8 @@
           }
         }
 
-        // Show live interim in active mode so user sees transcript as they speak
-        if (!wakeWordMode && interim && robotState === 'IDLE') {
+        // Show live interim transcript while user is speaking
+        if (interim && robotState === 'IDLE' && !isMediaPlaying) {
           showTranscript('🎤 ' + interim + '…');
           robotState = 'LISTENING';
         }
@@ -893,30 +927,8 @@
     }
 
     function handleSpeechResult(text) {
-      if (wakeWordMode) {
-        // Only act on the wake word
-        const lower = text.toLowerCase();
-        if (/\b(hey\s+mochi|mochi)\b/.test(lower)) {
-          wakeWordMode = false;
-          // Extract anything said after the wake word
-          const afterWake = text.replace(/^.*?\b(hey\s+mochi|mochi)\b\s*/i, '').trim();
-          if (afterWake) {
-            // Command was bundled with the wake word — process it directly
-            processChat(afterWake);
-          } else {
-            // Just the wake word — greet and wait
-            robotState = 'SPEAKING';
-            playTTS('Hey! How can I help?').then(() => {
-              robotState = 'IDLE';
-              resetInactivityTimer();
-            });
-          }
-        }
-        return;
-      }
-
-      // Active mode — ignore if busy
-      if (robotState === 'SPEAKING' || robotState === 'THINKING') return;
+      // Ignore while busy or media is playing
+      if (robotState === 'SPEAKING' || robotState === 'THINKING' || isMediaPlaying) return;
 
       resetInactivityTimer();
       processChat(text);
@@ -972,8 +984,8 @@
 
     // ── TTS helper — plays text, returns when done ────────────────
     async function playTTS(text) {
-      // Pause speech recognition so mic doesn't pick up TTS audio
-      srStop();
+      // Keep recognition running — robotState guards block results while SPEAKING/THINKING,
+      // so no feedback loop. Stopping + restarting adds a cold-start gap before first word.
       let played = false;
       try {
         const streamUrl = '/api/tts/stream?text=' + encodeURIComponent(text);
@@ -1023,8 +1035,7 @@
         });
       }
 
-      // Resume speech recognition after TTS finishes
-      setTimeout(srStart, 300);
+      // Recognition stayed running throughout — no restart needed here.
     }
 
     // ── Silent front-camera capture — returns base64 data URL or null ──

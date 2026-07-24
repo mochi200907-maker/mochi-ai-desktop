@@ -575,6 +575,163 @@ app.get('/api/shoti/url', async (req, res) => {
   }
 });
 
+// Proxy video — fetches a TikTok/Shoti MP4 from TikWM and pipes it to the
+// browser with proper CORS and Range support so autoplay works on mobile.
+// Only proxies URLs from tikwm.com to prevent open-proxy abuse.
+app.get('/proxy-video', async (req, res) => {
+  const url = req.query.url?.trim();
+  if (!url) return res.status(400).json({ error: 'url param required' });
+
+  let parsed;
+  try { parsed = new URL(url); } catch { return res.status(400).json({ error: 'invalid url' }); }
+  // Only proxy HTTPS requests to tikwm.com or its subdomains (e.g. cdn.tikwm.com).
+  // Exact suffix + protocol check prevents evil-lookalike and HTTP downgrade abuse.
+  const host = parsed.hostname;
+  const isAllowed = parsed.protocol === 'https:' &&
+    (host === 'tikwm.com' || host.endsWith('.tikwm.com'));
+  if (!isAllowed) {
+    return res.status(403).json({ error: 'only https://tikwm.com URLs are allowed' });
+  }
+
+  try {
+    const upstreamHeaders = {
+      'User-Agent': 'Mozilla/5.0 (Linux; Android 12; SM-G991B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
+      'Accept': 'video/mp4,video/*;q=0.9,*/*;q=0.8',
+      'Referer': 'https://www.tiktok.com/',
+      'Origin': 'https://www.tiktok.com',
+    };
+    const rangeHeader = req.headers['range'];
+    if (rangeHeader) upstreamHeaders['Range'] = rangeHeader;
+
+    const upstream = await fetch(url, {
+      headers: upstreamHeaders,
+      signal: AbortSignal.timeout(30000),
+    });
+
+    // Reject non-success responses before streaming anything — avoids silently
+    // piping an error page as "video" to the browser.
+    if (!upstream.ok && upstream.status !== 206) {
+      console.error(`[Proxy] upstream returned ${upstream.status} for ${url}`);
+      return res.status(502).json({ error: `Upstream error: ${upstream.status}` });
+    }
+
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Headers', 'Range');
+    res.setHeader('Access-Control-Expose-Headers', 'Content-Length, Content-Range, Accept-Ranges');
+    res.setHeader('Accept-Ranges', 'bytes');
+
+    const ct = upstream.headers.get('content-type') || 'video/mp4';
+    const cl = upstream.headers.get('content-length');
+    const cr = upstream.headers.get('content-range');
+    const ar = upstream.headers.get('accept-ranges');
+
+    res.setHeader('Content-Type', ct);
+    if (cl) res.setHeader('Content-Length', cl);
+    if (cr) res.setHeader('Content-Range', cr);
+    if (ar) res.setHeader('Accept-Ranges', ar);
+
+    res.status(upstream.status === 206 ? 206 : 200);
+
+    const { Readable } = await import('stream');
+    const nodeStream = Readable.fromWeb(upstream.body);
+    nodeStream.pipe(res);
+    nodeStream.on('error', () => { if (!res.writableEnded) res.destroy(); });
+    req.on('close', () => nodeStream.destroy());
+  } catch (err) {
+    console.error('[Proxy] video error:', err.message);
+    if (!res.headersSent) res.status(502).json({ error: 'Proxy fetch failed' });
+  }
+});
+
+// Video download — downloads TikTok/Shoti MP4 from TikWM to a temp file,
+// serves it with full Range support (seekable), then deletes the temp file.
+app.get('/api/video/download', async (req, res) => {
+  const url = req.query.url?.trim();
+  if (!url) return res.status(400).json({ error: 'url param required' });
+
+  let parsed;
+  try { parsed = new URL(url); } catch { return res.status(400).json({ error: 'invalid url' }); }
+  const host = parsed.hostname;
+  const isAllowed = parsed.protocol === 'https:' &&
+    (host === 'tikwm.com' || host.endsWith('.tikwm.com'));
+  if (!isAllowed) {
+    return res.status(403).json({ error: 'only https://tikwm.com URLs are allowed' });
+  }
+
+  const tmpFile = path.join(os.tmpdir(), `mochi_vid_${Date.now()}_${randomBytes(4).toString('hex')}.mp4`);
+  try {
+    // Helper: attempt a fetch with the given URL and headers; return null on non-2xx
+    async function tryFetch(targetUrl, headers) {
+      const r = await fetch(targetUrl, { headers, signal: AbortSignal.timeout(60000) });
+      return r.ok ? r : null;
+    }
+
+    const baseHeaders = {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'Accept': 'video/mp4,video/*;q=0.9,*/*;q=0.8',
+    };
+
+    console.log(`[Video] downloading: ${url}`);
+
+    // Attempt 1 — plain fetch (no Referer/Origin; CDN may reject cross-origin headers)
+    let upstream = await tryFetch(url, baseHeaders);
+
+    // Attempt 2 — Re-query TikWM API to get a fresh play URL (original may have expired)
+    if (!upstream) {
+      console.warn('[Video] attempt 1 failed, re-fetching TikWM API for fresh URL…');
+      const videoId = url.match(/\/(\d{10,25})(?:\.mp4)?(?:\?|$)/)?.[1];
+      if (videoId) {
+        try {
+          const apiRes = await fetch(
+            `${TIKWM_BASE}/api/?url=https://www.tiktok.com/video/${videoId}&hd=1`,
+            { headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json' }, signal: AbortSignal.timeout(15000) }
+          );
+          if (apiRes.ok) {
+            const body = await apiRes.json();
+            const freshUrl = absoluteTikwmUrl(body?.data?.play || body?.data?.hdplay || body?.data?.wmplay);
+            if (freshUrl && freshUrl !== url) {
+              console.log(`[Video] retrying with fresh URL: ${freshUrl}`);
+              upstream = await tryFetch(freshUrl, baseHeaders);
+            }
+          }
+        } catch (e) { console.warn('[Video] TikWM re-query failed:', e.message); }
+      }
+    }
+
+    if (!upstream) {
+      console.error('[Video] all download attempts failed');
+      return res.status(502).json({ error: 'Video source unavailable' });
+    }
+
+    // Download the full video to a temp file before serving
+    const { Readable } = await import('stream');
+    const writeStream = fs.createWriteStream(tmpFile);
+    const nodeStream = Readable.fromWeb(upstream.body);
+    await new Promise((resolve, reject) => {
+      nodeStream.pipe(writeStream);
+      writeStream.on('finish', resolve);
+      writeStream.on('error', reject);
+      nodeStream.on('error', reject);
+    });
+
+    const size = fs.statSync(tmpFile).size;
+    console.log(`[Video] downloaded ${size} bytes → serving`);
+
+    // res.sendFile handles Content-Length, Accept-Ranges, and Range requests automatically.
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Expose-Headers', 'Content-Length, Content-Range, Accept-Ranges');
+    res.sendFile(tmpFile, { headers: { 'Content-Type': 'video/mp4' } }, (err) => {
+      if (err && !res.headersSent) res.status(500).end();
+      // Always clean up the temp file once the response is complete
+      try { fs.unlinkSync(tmpFile); console.log('[Video] temp file deleted'); } catch {}
+    });
+  } catch (err) {
+    console.error('[Video] download error:', err.message);
+    try { if (fs.existsSync(tmpFile)) fs.unlinkSync(tmpFile); } catch {}
+    if (!res.headersSent) res.status(502).json({ error: 'Video download failed' });
+  }
+});
+
 // Music stream — search + fetch + stream in ONE request so the signed URL
 // never has a chance to expire between the lookup and the actual playback.
 app.get('/api/music/stream', async (req, res) => {
