@@ -1083,29 +1083,21 @@
           const ttsEl = new Audio();
           ttsEl.preload = 'auto';
 
-          // Play natively — do NOT route through audioCtx.destination.
-          // On Android, getUserMedia puts the audio session in communication
-          // mode; any audio routed through that AudioContext inherits call
-          // volume + noise reduction. Playing the <audio> element natively
-          // lets Android treat it as media volume (loud, full-band, no NR).
-          //
-          // For mouth-sync animation we tap the stream with captureStream()
-          // into a separate analysis-only AudioContext that has no destination
-          // — so it never reaches the speakers and doesn't affect volume.
+          // Route through audioCtx for the mouth-sync RMS analyser.
+          // Media volume on Android is already fixed by the getUserMedia
+          // constraints (echoCancellation/noiseSuppression/autoGainControl: false)
+          // which prevents the audio session from entering communication mode.
           try {
-            if (typeof ttsEl.captureStream === 'function') {
-              const capCtx = new AudioContext();
-              const capSrc = capCtx.createMediaStreamSource(ttsEl.captureStream());
-              ttsAnalyser = capCtx.createAnalyser();
-              ttsAnalyser.fftSize = 256;
-              ttsAnalyser.smoothingTimeConstant = 0.4;
-              capSrc.connect(ttsAnalyser);
-              // Intentionally NOT connected to capCtx.destination — analysis only.
-            } else {
-              ttsAnalyser = null; // falls back to sine-wave mouth animation
-            }
+            const ttsSrc  = audioCtx.createMediaElementSource(ttsEl);
+            const ttsGain = audioCtx.createGain();
+            ttsAnalyser   = audioCtx.createAnalyser();
+            ttsAnalyser.fftSize = 256;
+            ttsAnalyser.smoothingTimeConstant = 0.4;
+            ttsSrc.connect(ttsAnalyser);
+            ttsAnalyser.connect(ttsGain);
+            ttsGain.connect(audioCtx.destination);
           } catch (routeErr) {
-            console.warn('TTS analyser skipped:', routeErr.message);
+            console.warn('AudioContext routing skipped:', routeErr.message);
             ttsAnalyser = null;
           }
 
