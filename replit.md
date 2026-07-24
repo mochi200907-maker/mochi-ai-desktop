@@ -14,7 +14,7 @@ An AI-powered robot face server — animated canvas eyes, Groq Whisper STT, LLM 
 npm install
 node server.js        # or use the "Start application" workflow
 ```
-App runs on **port 5000**. Open `http://<host>:5000/robot` for the robot face UI.
+App runs on **port 5000**. Open `http://<host>:5000/app` for the robot face UI.
 
 ## Required secrets
 | Secret | Where to set |
