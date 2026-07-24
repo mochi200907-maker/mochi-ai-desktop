@@ -1,0 +1,43 @@
+import { Groq } from 'groq-sdk';
+
+const groq = new Groq();
+
+const chatCompletion = await groq.chat.completions.create({
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "what can you see here?"
+        },
+        {
+          "type": "image_url",
+          "image_url": {
+            "url": IMAGE_DATA_URL
+          }
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": "This image appears to be a **selfie or close-up portrait** of a young person, likely a student, taken outdoors. Here’s what can be observed:\n\n---\n\n### 👤 **Person:**\n- A young male with dark, curly/wavy hair and light brown skin.\n- He is looking directly at the camera with a neutral or slightly playful expression.\n- His face is shown in multiple cropped/overlapping views — suggesting this might be a collage or edited photo (possibly from a social media post).\n\n---\n\n### 👕 **Clothing:**\n- He’s wearing a **white collared shirt**, possibly a school uniform.\n- Over the shirt, he has a **sash or stole** draped diagonally across his chest.\n  - The sash is primarily **maroon (dark red)** with **green borders**.\n  - It features a **circular emblem/logo** near the top right (on the viewer’s left).\n  - White text is visible on the sash: **“SHS”** and part of another word that looks like **“2024”** or similar — possibly indicating “Senior High School 2024” or an event/year.\n\n> 🎓 This suggests he may be a **Senior High School student**, perhaps participating in a graduation, orientation, or school event in 2024.\n\n---\n\n### 🌿 **Background:**\n- The setting is **outdoors**, on **dry, sandy or dusty ground**.\n- There are sparse plants, twigs, and some debris — indicating a rural or undeveloped area.\n- Natural daylight lighting.\n\n---\n\n### 🖼️ **Image Composition:**\n- The image seems to be **edited or composed of multiple overlapping frames** — you can see parts of the same person repeated or mirrored (e.g., ear, hair, sash appear in different positions).\n- This could be intentional for artistic effect, or it might be a glitch/crop error from editing software.\n\n---\n\n### 🔍 Summary:\nYou’re seeing a **young male student**, likely from a Philippine school (given the “SHS” acronym commonly used there for Senior High School), wearing a ceremonial sash, posing outdoors in a casual, possibly celebratory context. The image has been manipulated or cropped into multiple overlapping sections.\n\nLet me know if you’d like help identifying the school logo or interpreting the text on the sash!"
+    },
+    {
+      "role": "user",
+      "content": ""
+    }
+  ],
+  "model": "qwen/qwen3.6-27b",
+  "temperature": 0.6,
+  "max_completion_tokens": 2048,
+  "top_p": 0.95,
+  "stream": true,
+  "reasoning_effort": "none",
+  "stop": null
+});
+
+for await (const chunk of chatCompletion) {
+  process.stdout.write(chunk.choices[0]?.delta?.content || '');
+}
+

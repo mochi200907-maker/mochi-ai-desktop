@@ -1,0 +1,53 @@
+{
+  "expo": {
+    "name": "Mochi Robot",
+    "slug": "looi-robot-app",
+    "version": "1.0.0",
+    "orientation": "default",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "splash": {
+      "backgroundColor": "#000000"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.looi.robot",
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "Mochi needs the microphone to hear you speak.",
+        "NSCameraUsageDescription": "Mochi needs the camera to take photos when you ask.",
+        "UIBackgroundModes": [
+          "audio"
+        ]
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#000000"
+      },
+      "package": "com.looi.robot",
+      "permissions": [
+        "RECORD_AUDIO",
+        "CAMERA",
+        "FOREGROUND_SERVICE",
+        "WAKE_LOCK",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.MODIFY_AUDIO_SETTINGS"
+      ]
+    },
+    "plugins": [
+      [
+        "expo-av",
+        {
+          "microphonePermission": "Mochi needs the microphone to hear you speak."
+        }
+      ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "9eca938a-790f-4e4d-8509-83088974711a"
+      }
+    },
+    "owner": "aprilpogi07"
+  }
+}

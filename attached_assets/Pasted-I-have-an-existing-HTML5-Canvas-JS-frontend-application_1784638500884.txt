@@ -1,0 +1,32 @@
+I have an existing HTML5 Canvas / JS frontend application for a "LOOI AI Robot Face Interface". Right now, it's designed as a web app, but I want to turn it into a cross-platform mobile application (using React Native, Capacitor, or Flutter) that communicates with my backend server hosted on Render.
+
+Please transform and build this mobile app based on the following specifications:
+
+### 1. Architecture & Tech Stack
+- **Mobile Application (Client):** Package/convert the provided HTML/Canvas interface into a mobile app (e.g., using Capacitor with Webview, or React Native WebView/Canvas) so it can run smoothly on Android/iOS.
+- **Render Backend Server:** External API hosting `/api/stt`, `/api/chat`, and `/api/tts`.
+- **Bluetooth (BLE):** Ensure Web Bluetooth or native BLE APIs work inside the mobile app to send motion commands to an ESP32 robot.
+- **Audio & Mic Access:** Ensure proper native app permissions for Microphone access (VAD recording) and Web Audio API playback.
+
+2. API Integration & Streaming
+- Define a configurable `BACKEND_URL` (e.g., `https://your-render-app.onrender.com`).
+- Refactor the existing fetch logic (`/api/stt`, `/api/chat`, `/api/tts`) to hit `${BACKEND_URL}`.
+- Stream TTS audio chunks from Render directly into the Web Audio API context so the mouth animation syncs smoothly in real time while the robot speaks.
+
+3. Features to Retain from Original UI Code:
+- Canvas-based LOOI AI Robot Face with realistic eye blinking, gaze movement, and mouth sync.
+- Interactive Expressions (MUSIC, BURGER, JUICE, NEWS, HAPPY, WINK, etc.).
+- Waveform UI and state monitoring (IDLE, LISTENING, THINKING, SPEAKING).
+- WebBluetooth (BLE) setup for ESP32 connectivity.
+
+Here is the existing frontend web code base to be adapted into the app:
+
+[PASTE YOUR FULL HTML CODE HERE]
+
+---
+
+### Instructions for Replit Agent:
+1. Set up the mobile app project structure in Replit (preferably using React Native or Capacitor for quick native mobile deployment).
+2. Wire up native permissions for Microphone and Bluetooth.
+3. Point all API calls to the external `BACKEND_URL` and enable audio streaming support.
+4. Ensure full-screen immersion without browser address bars (Native App experience).

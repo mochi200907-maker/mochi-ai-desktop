@@ -1,0 +1,3 @@
+- [ESP32-S3 watchdog debugging](esp32-s3-watchdog.md) — keep boot-stage markers and move BLE hardware work onto the main loop.
+- [Responsive face layout](responsive-face-layout.md) — scale the logical canvas to the shortest live viewport dimension so landscape phones do not crop.
+- [TikTok media routing](tiktok-media-routing.md) — route TikTok intents through TikWM direct MP4 playback, not the YouTube iframe.

@@ -1,0 +1,1779 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Mochi AI Robot Face</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; min-height: 100%; }
+    body { background: #000; overflow: hidden; font-family: system-ui, -apple-system, sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; height: 100dvh; }
+    
+    #robot-screen {
+      position: fixed;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      min-height: 100dvh;
+      background: #000;
+      overflow: hidden;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+
+    canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
+
+    #status-bar {
+      position: absolute;
+      top: max(12px, env(safe-area-inset-top));
+      right: max(12px, env(safe-area-inset-right));
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      z-index: 10;
+    }
+    .waveform-bar {
+      width: 4px;
+      height: 6px;
+      background: #00d2ff;
+      border-radius: 3px;
+      transform-origin: center;
+      transition: height 0.08s ease, background 0.3s ease;
+    }
+    #state-text {
+      color: #00d2ff;
+      font-size: 11px;
+      font-weight: bold;
+      text-transform: uppercase;
+      letter-spacing: 2px;
+      margin-left: 6px;
+      opacity: 0.7;
+    }
+
+    #transcript-bar {
+      position: absolute;
+      bottom: max(16px, env(safe-area-inset-bottom));
+      left: 50%;
+      transform: translateX(-50%);
+      max-width: 88vw;
+      background: rgba(0,0,0,0.72);
+      border: 1px solid #00d2ff44;
+      border-radius: 20px;
+      padding: 7px 20px;
+      color: #cce8ff;
+      font-size: 13px;
+      text-align: center;
+      letter-spacing: 0.5px;
+      z-index: 10;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.4s ease;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    #transcript-bar.visible { opacity: 1; }
+
+    #error-toast {
+      position: absolute;
+      bottom: max(62px, calc(env(safe-area-inset-bottom) + 46px));
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(180,30,30,0.85);
+      border: 1px solid #ff4444;
+      border-radius: 14px;
+      padding: 7px 18px;
+      color: #ffaaaa;
+      font-size: 12px;
+      text-align: center;
+      z-index: 15;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.4s ease;
+    }
+    #error-toast.visible { opacity: 1; }
+
+
+    #start-overlay {
+      position: absolute;
+      z-index: 99;
+      background: rgba(0,0,0,0.92);
+      color: white;
+      width: 100%;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      gap: 20px;
+    }
+    button { padding: 12px 24px; font-size: 18px; border-radius: 30px; border: none; background: #00d2ff; color: #000; font-weight: bold; cursor: pointer; transition: transform 0.2s; }
+    button:hover { transform: scale(1.05); }
+
+    /* ── FLASH OVERLAY ── */
+    #flash-overlay {
+      position: fixed;
+      inset: 0;
+      background: #fff;
+      z-index: 200;
+      pointer-events: none;
+      opacity: 0;
+      transition: none;
+    }
+    #flash-overlay.flash-active {
+      animation: cameraFlash 0.55s ease-out forwards;
+    }
+    @keyframes cameraFlash {
+      0%   { opacity: 0; }
+      8%   { opacity: 1; }
+      100% { opacity: 0; }
+    }
+
+    /* ── PHOTO MODAL ── */
+    #photo-modal {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 300;
+      background: rgba(0,0,0,0.82);
+      justify-content: center;
+      align-items: center;
+      flex-direction: column;
+      gap: 20px;
+    }
+    #photo-modal.open { display: flex; }
+    #photo-modal img {
+      max-width: min(90vw, 480px);
+      max-height: 55vh;
+      border-radius: 18px;
+      border: 3px solid #00d2ff;
+      box-shadow: 0 0 40px #00d2ff88;
+      object-fit: cover;
+    }
+    #photo-modal .modal-label {
+      color: #00d2ff;
+      font-size: 13px;
+      font-weight: bold;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      opacity: 0.85;
+    }
+    #photo-modal .modal-btns {
+      display: flex;
+      gap: 16px;
+    }
+    #photo-modal .btn-save {
+      background: #00d2ff;
+      color: #000;
+    }
+    #photo-modal .btn-discard {
+      background: rgba(255,255,255,0.12);
+      color: #fff;
+      border: 1.5px solid rgba(255,255,255,0.25);
+    }
+
+    /* ── VIDEO PLAYER ── */
+    #video-modal {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 250;
+      background: rgba(0,0,0,0.96);
+      justify-content: center;
+      align-items: center;
+      flex-direction: column;
+      gap: 14px;
+      padding: max(12px, env(safe-area-inset-top))
+               max(12px, env(safe-area-inset-right))
+               max(12px, env(safe-area-inset-bottom))
+               max(12px, env(safe-area-inset-left));
+    }
+    #video-modal.open { display: flex; }
+    #video-frame {
+      width: min(94vw, calc((100dvh - 112px) * 16 / 9), 960px);
+      max-width: 100%;
+      max-height: calc(100dvh - 112px);
+      aspect-ratio: 16 / 9;
+      border: 1px solid #ff4fd888;
+      border-radius: 14px;
+      background: #050509;
+    }
+    #tiktok-video {
+      display: none;
+      width: min(94vw, calc((100dvh - 112px) * 9 / 16), 520px);
+      max-width: 100%;
+      max-height: calc(100dvh - 112px);
+      aspect-ratio: 9 / 16;
+      border: 1px solid #ff4fd888;
+      border-radius: 14px;
+      background: #050509;
+      object-fit: contain;
+    }
+    #video-modal .video-title {
+      max-width: 90vw;
+      color: #ffb8f0;
+      font-size: 14px;
+      font-weight: 600;
+      text-align: center;
+    }
+    #video-modal .video-stop {
+      background: #ff4fd8;
+      color: #170013;
+      font-size: 14px;
+      padding: 10px 24px;
+    }
+
+    /* Keep controls and the video inside short landscape phone viewports. */
+    @media (max-height: 520px) {
+      #video-modal { gap: 8px; }
+      #video-frame {
+        width: min(94vw, calc((100dvh - 98px) * 16 / 9), 960px);
+        max-height: calc(100dvh - 98px);
+      }
+      #tiktok-video {
+        width: min(94vw, calc((100dvh - 98px) * 9 / 16), 360px);
+        max-height: calc(100dvh - 98px);
+      }
+      #video-modal .video-title { font-size: 12px; }
+      #video-modal .video-stop { padding: 8px 20px; font-size: 13px; }
+    }
+  </style>
+</head>
+<body>
+
+  <div id="start-overlay">
+    <h1>Mochi AI Robot Interface</h1>
+    <div style="display:flex;flex-direction:column;align-items:center;gap:6px;margin-bottom:4px;">
+      <label style="color:#888;font-size:12px;letter-spacing:1px;text-transform:uppercase;">BLE Device Name</label>
+      <input id="ble-name-input" type="text" value="MOCHI_ESP32_ROBOT"
+        style="background:#1a1a2e;border:1px solid #00d2ff55;border-radius:8px;color:#00d2ff;
+               font-size:13px;padding:7px 14px;text-align:center;width:230px;outline:none;" />
+    </div>
+    <button id="connect-btn">Connect ESP32 &amp; Start Robot</button>
+    <button id="voiceonly-btn" style="background: rgba(255,255,255,0.15); color: #fff; margin-top: -8px; font-size: 14px; padding: 10px 22px;">Start without Robot (Voice only)</button>
+  </div>
+
+  <!-- Flash overlay -->
+  <div id="flash-overlay"></div>
+
+  <!-- Photo result modal -->
+  <div id="photo-modal">
+    <div class="modal-label">📸 Photo captured!</div>
+    <img id="photo-preview" src="" alt="Captured photo" />
+    <div class="modal-btns">
+      <button class="btn-save" id="btn-save-photo">Save</button>
+      <button class="btn-discard" id="btn-discard-photo">Discard</button>
+    </div>
+  </div>
+
+  <div id="video-modal">
+    <iframe id="video-frame" title="Mochi video player"
+      allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen></iframe>
+    <video id="tiktok-video" playsinline controls></video>
+    <div class="video-title" id="video-title"></div>
+    <button class="video-stop" id="video-stop">■ Stop video</button>
+  </div>
+
+  <div id="robot-screen">
+    <div id="status-bar">
+      <div class="waveform-bar" id="wb1"></div>
+      <div class="waveform-bar" id="wb2"></div>
+      <div class="waveform-bar" id="wb3"></div>
+      <div class="waveform-bar" id="wb4"></div>
+      <div class="waveform-bar" id="wb5"></div>
+      <div class="waveform-bar" id="wb6"></div>
+      <div class="waveform-bar" id="wb7"></div>
+      <span id="state-text">IDLE</span>
+    </div>
+
+    <div id="transcript-bar"></div>
+    <div id="error-toast"></div>
+    <canvas id="faceCanvas"></canvas>
+  </div>
+
+  <script>
+    const canvas = document.getElementById('faceCanvas');
+    const ctx = canvas.getContext('2d');
+    function viewportSize() {
+      const root = document.getElementById('robot-screen');
+      const visual = window.visualViewport;
+      return {
+        width: Math.max(1, Math.round(root?.clientWidth || visual?.width || window.innerWidth)),
+        height: Math.max(1, Math.round(root?.clientHeight || visual?.height || window.innerHeight)),
+      };
+    }
+    function resize() {
+      const size = viewportSize();
+      canvas.width = size.width;
+      canvas.height = size.height;
+    }
+    window.addEventListener('resize', resize);
+    window.visualViewport?.addEventListener('resize', resize);
+    window.visualViewport?.addEventListener('scroll', resize);
+    resize();
+
+    let currentExpression = 'IDLE'; // IDLE, HAPPY, ANGRY, SAD, WINK, MUSIC, BURGER, JUICE, NEWS, CAMERA
+    let robotState = 'IDLE';        // IDLE, LISTENING, THINKING, SPEAKING
+
+    // ── CAMERA FEATURE ────────────────────────────────────────────
+    let cameraAnimPhase = 'none'; // 'none' | 'raising' | 'held' | 'lowering'
+    let cameraAnimY = 0;          // current Y offset (canvas units, starts offscreen)
+    let cameraAnimTarget = 0;
+    let cameraCaptured = false;
+
+    function playCameraShutter() {
+      try {
+        const sCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const sampleRate = sCtx.sampleRate;
+
+        // Mechanical click body (noise burst that decays fast)
+        const clickLen = Math.floor(sampleRate * 0.06);
+        const clickBuf = sCtx.createBuffer(1, clickLen, sampleRate);
+        const clickData = clickBuf.getChannelData(0);
+        for (let i = 0; i < clickLen; i++) {
+          clickData[i] = (Math.random() * 2 - 1) * Math.exp(-i / (sampleRate * 0.008));
+        }
+
+        // Mechanical rattle tail
+        const tailLen = Math.floor(sampleRate * 0.12);
+        const tailBuf = sCtx.createBuffer(1, tailLen, sampleRate);
+        const tailData = tailBuf.getChannelData(0);
+        for (let i = 0; i < tailLen; i++) {
+          tailData[i] = (Math.random() * 2 - 1) * Math.exp(-i / (sampleRate * 0.03)) * 0.35;
+        }
+
+        const clickSrc = sCtx.createBufferSource();
+        clickSrc.buffer = clickBuf;
+        const tailSrc = sCtx.createBufferSource();
+        tailSrc.buffer = tailBuf;
+
+        const gain = sCtx.createGain();
+        gain.gain.value = 0.7;
+        clickSrc.connect(gain); tailSrc.connect(gain);
+        gain.connect(sCtx.destination);
+
+        clickSrc.start(0);
+        tailSrc.start(sCtx.currentTime + 0.03);
+      } catch(e) { console.warn('Shutter sound error', e); }
+    }
+
+    async function triggerCameraCapture() {
+      if (cameraAnimPhase !== 'none' || cameraCaptured) return;
+      cameraCaptured = true;
+
+      // 1. Animate camera raising from below
+      cameraAnimPhase = 'raising';
+      cameraAnimY = 320; // starts offscreen below
+      cameraAnimTarget = 0;
+
+      await new Promise(r => setTimeout(r, 750)); // let raise animation play
+
+      // 2. Access camera
+      let videoStream;
+      try {
+        videoStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio: false });
+      } catch(err) {
+        console.warn('Camera access denied:', err);
+        cameraAnimPhase = 'lowering';
+        await new Promise(r => setTimeout(r, 500));
+        cameraAnimPhase = 'none';
+        cameraCaptured = false;
+        currentExpression = 'IDLE';
+        return;
+      }
+
+      const video = document.createElement('video');
+      video.srcObject = videoStream;
+      video.playsInline = true;
+      await video.play();
+
+      // Small warm-up delay so camera exposure settles
+      await new Promise(r => setTimeout(r, 400));
+
+      // 3. Flash + shutter sound simultaneously
+      const flashEl = document.getElementById('flash-overlay');
+      flashEl.classList.remove('flash-active');
+      void flashEl.offsetWidth; // reflow to restart animation
+      flashEl.classList.add('flash-active');
+      playCameraShutter();
+
+      // 4. Capture frame
+      const cap = document.createElement('canvas');
+      cap.width = video.videoWidth || 640;
+      cap.height = video.videoHeight || 480;
+      const capCtx = cap.getContext('2d');
+      // Mirror so it looks like a selfie
+      capCtx.translate(cap.width, 0);
+      capCtx.scale(-1, 1);
+      capCtx.drawImage(video, 0, 0);
+
+      videoStream.getTracks().forEach(t => t.stop());
+
+      await new Promise(r => setTimeout(r, 350));
+
+      // 5. Lower camera animation
+      cameraAnimPhase = 'lowering';
+      cameraAnimTarget = 320;
+      await new Promise(r => setTimeout(r, 500));
+      cameraAnimPhase = 'none';
+      cameraAnimY = 320;
+      currentExpression = 'HAPPY';
+
+      // 6. Show photo modal
+      const photoDataURL = cap.toDataURL('image/jpeg', 0.92);
+      document.getElementById('photo-preview').src = photoDataURL;
+      document.getElementById('photo-modal').classList.add('open');
+
+      // Store for save button
+      document.getElementById('btn-save-photo').dataset.photoUrl = photoDataURL;
+      cameraCaptured = false;
+    }
+
+    document.getElementById('btn-save-photo').addEventListener('click', () => {
+      const url = document.getElementById('btn-save-photo').dataset.photoUrl;
+      if (!url) return;
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `mochi_photo_${Date.now()}.jpg`;
+      a.click();
+      document.getElementById('photo-modal').classList.remove('open');
+    });
+
+    document.getElementById('btn-discard-photo').addEventListener('click', () => {
+      document.getElementById('photo-modal').classList.remove('open');
+      document.getElementById('photo-preview').src = '';
+    });
+
+    // Draw animated camera on canvas
+    function drawCameraAccessory(cx, cy) {
+      if (cameraAnimPhase === 'none') return;
+
+      // Smoothly interpolate Y
+      const speed = 0.14;
+      cameraAnimY += (cameraAnimTarget - cameraAnimY) * speed;
+
+      const camX = cx;
+      const camY = cy + 220 + cameraAnimY;
+
+      ctx.save();
+      ctx.translate(camX, camY);
+
+      // Gentle hover bob when held
+      const bob = cameraAnimPhase === 'held' ? Math.sin(Date.now() * 0.005) * 4 : 0;
+      ctx.translate(0, bob);
+
+      const bw = 130, bh = 78, br = 14;  // body
+      const lensR = 26;
+
+      // Body shadow glow
+      ctx.shadowColor = '#00d2ff';
+      ctx.shadowBlur = 20;
+
+      // Camera body
+      ctx.beginPath();
+      ctx.roundRect(-bw / 2, -bh / 2, bw, bh, br);
+      ctx.fillStyle = '#1a1a2e';
+      ctx.fill();
+      ctx.strokeStyle = '#00d2ff';
+      ctx.lineWidth = 2.5;
+      ctx.stroke();
+
+      // Top hump (viewfinder bump)
+      ctx.beginPath();
+      ctx.roundRect(-22, -bh / 2 - 18, 44, 22, [8, 8, 0, 0]);
+      ctx.fillStyle = '#1a1a2e';
+      ctx.fill();
+      ctx.strokeStyle = '#00d2ff';
+      ctx.lineWidth = 2.5;
+      ctx.stroke();
+
+      ctx.shadowBlur = 0;
+
+      // Lens outer ring
+      ctx.beginPath();
+      ctx.arc(10, 4, lensR + 6, 0, Math.PI * 2);
+      ctx.fillStyle = '#0d0d1a';
+      ctx.fill();
+      ctx.strokeStyle = '#3ad8ff';
+      ctx.lineWidth = 3;
+      ctx.stroke();
+
+      // Lens glass gradient
+      const lensGrad = ctx.createRadialGradient(6, 0, 2, 10, 4, lensR);
+      lensGrad.addColorStop(0, '#2a4a8a');
+      lensGrad.addColorStop(0.5, '#0d1a3a');
+      lensGrad.addColorStop(1, '#020a1a');
+      ctx.beginPath();
+      ctx.arc(10, 4, lensR, 0, Math.PI * 2);
+      ctx.fillStyle = lensGrad;
+      ctx.fill();
+
+      // Lens sheen
+      ctx.beginPath();
+      ctx.ellipse(3, -4, lensR * 0.45, lensR * 0.28, -0.5, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(255,255,255,0.13)';
+      ctx.fill();
+
+      // Shutter button
+      ctx.beginPath();
+      ctx.arc(bw / 2 - 20, -bh / 2 + 10, 7, 0, Math.PI * 2);
+      ctx.fillStyle = '#ff5e97';
+      ctx.fill();
+
+      // Flash LED
+      ctx.beginPath();
+      ctx.roundRect(-bw / 2 + 12, -bh / 2 + 10, 18, 10, 4);
+      ctx.fillStyle = '#fffde7';
+      ctx.shadowColor = '#fff';
+      ctx.shadowBlur = 8;
+      ctx.fill();
+      ctx.shadowBlur = 0;
+
+      // Viewfinder tiny window
+      ctx.beginPath();
+      ctx.roundRect(bw / 2 - 44, -bh / 2 + 14, 24, 16, 3);
+      ctx.fillStyle = '#00d2ff33';
+      ctx.strokeStyle = '#00d2ff88';
+      ctx.lineWidth = 1.5;
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.restore();
+    }
+
+    // ── KEEP RENDER ALIVE — ping /health every 4 min to prevent spin-down ──
+    setInterval(() => fetch('/health').catch(() => {}), 4 * 60 * 1000);
+
+    // ── MEDIA PLAYERS ────────────────────────────────────────────
+    // No crossOrigin / createMediaElementSource — those block playback when
+    // the upstream returns video/mp4.  Waveform is driven by a smooth
+    // simulated animation instead of a real analyser.
+    let musicAudio = null;
+    let musicPlaying = false;
+
+    function playMusicUrl(title, url) {
+      stopMusic();
+      musicAudio = new Audio(url);
+      musicAudio.preload = 'auto';
+      musicAudio.onended = () => stopMusic();
+      musicAudio.onerror = () => {
+        const code = musicAudio?.error?.code;
+        console.warn('Music audio error, code:', code);
+        showError('Music playback error');
+        stopMusic();
+      };
+      musicAudio.play().catch(err => { showError('Music play: ' + err.message); stopMusic(); });
+      musicPlaying = true;
+      showTranscript('🎵 ' + title);
+      currentExpression = 'MUSIC';
+    }
+
+    function stopMusic() {
+      if (musicAudio) {
+        musicAudio.pause();
+        musicAudio.src = '';
+        musicAudio = null;
+      }
+      musicPlaying = false;
+      if (currentExpression === 'MUSIC') currentExpression = 'IDLE';
+    }
+
+    function youtubeId(url) {
+      try {
+        const parsed = new URL(url);
+        if (parsed.hostname.includes('youtu.be')) return parsed.pathname.slice(1);
+        return parsed.searchParams.get('v') || parsed.pathname.split('/').pop();
+      } catch (_) {
+        return null;
+      }
+    }
+
+    function playVideoUrl(title, url, provider = 'youtube') {
+      stopMusic();
+      const modal = document.getElementById('video-modal');
+      const frame = document.getElementById('video-frame');
+      const tiktokVideo = document.getElementById('tiktok-video');
+      const label = document.getElementById('video-title');
+      if (!modal || !frame || !tiktokVideo) {
+        showError('Video URL is not valid');
+        return;
+      }
+      const isTikTok = provider === 'tiktok';
+      if (isTikTok) {
+        // Use TikTok's official embed iframe — no CORS, no server-side fetching needed
+        tiktokVideo.pause();
+        tiktokVideo.removeAttribute('src');
+        tiktokVideo.load();
+        tiktokVideo.style.display = 'none';
+        // Switch iframe to portrait 9:16 for TikTok
+        frame.style.aspectRatio = '9 / 16';
+        frame.style.width = 'min(94vw, calc((100dvh - 112px) * 9 / 16), 420px)';
+        frame.style.maxHeight = 'calc(100dvh - 112px)';
+        frame.style.display = 'block';
+        frame.src = url; // tiktok.com/embed/v2/{id}
+      } else {
+        const id = youtubeId(url);
+        if (!id) {
+          showError('Video URL is not valid');
+          return;
+        }
+        tiktokVideo.pause();
+        tiktokVideo.removeAttribute('src');
+        tiktokVideo.load();
+        tiktokVideo.style.display = 'none';
+        frame.style.display = 'block';
+        frame.src = 'https://www.youtube.com/embed/' + encodeURIComponent(id)
+          + '?autoplay=1&playsinline=1&rel=0';
+      }
+      if (label) label.textContent = title || 'Playing video';
+      modal.classList.add('open');
+      musicPlaying = true; // pause VAD while video audio is playing
+      currentExpression = 'MUSIC';
+      showTranscript('🎬 ' + (title || 'Playing video'));
+    }
+
+    function stopVideo() {
+      const modal = document.getElementById('video-modal');
+      const frame = document.getElementById('video-frame');
+      const tiktokVideo = document.getElementById('tiktok-video');
+      if (frame) {
+        frame.src = 'about:blank';
+        // Reset iframe back to landscape 16:9 for next YouTube video
+        frame.style.aspectRatio = '';
+        frame.style.width = '';
+        frame.style.maxHeight = '';
+        frame.style.display = 'block';
+      }
+      if (tiktokVideo) {
+        tiktokVideo.pause();
+        tiktokVideo.removeAttribute('src');
+        tiktokVideo.load();
+        tiktokVideo.style.display = 'none';
+      }
+      if (modal) modal.classList.remove('open');
+      musicPlaying = false;
+      if (currentExpression === 'MUSIC') currentExpression = 'IDLE';
+    }
+
+    document.getElementById('video-stop').addEventListener('click', stopVideo);
+
+    // ── TRANSCRIPT / ERROR UI ─────────────────────────────────────
+    let _transcriptTimer = null;
+    function showTranscript(text) {
+      const el = document.getElementById('transcript-bar');
+      el.textContent = text;
+      el.classList.add('visible');
+      clearTimeout(_transcriptTimer);
+      _transcriptTimer = setTimeout(() => el.classList.remove('visible'), 5000);
+    }
+    let _errorTimer = null;
+    function showError(msg) {
+      const el = document.getElementById('error-toast');
+      el.textContent = '⚠ ' + msg;
+      el.classList.add('visible');
+      clearTimeout(_errorTimer);
+      _errorTimer = setTimeout(() => el.classList.remove('visible'), 4000);
+    }
+
+    let bleDevice, bleCharacteristic;
+    const SERVICE_UUID = "4fafc201-1fb5-459e-8fcc-c5c9c331914b";
+    const CHARACTERISTIC_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8";
+
+    // Persist BLE device name across sessions
+    const bleNameInput = document.getElementById('ble-name-input');
+    const savedBleName = localStorage.getItem('mochi_ble_name');
+    if (savedBleName) bleNameInput.value = savedBleName;
+    bleNameInput.addEventListener('change', () => {
+      localStorage.setItem('mochi_ble_name', bleNameInput.value.trim());
+    });
+
+    let audioCtx, analyser, micStream;
+
+    // ── Wake word state ───────────────────────────────────────────
+    let wakeWordMode = true;         // true = waiting for "mochi" / "hey mochi"
+    let inactivityTimer = null;
+    const INACTIVITY_MS = 2 * 60 * 1000;  // 2 minutes
+
+    // ── Web Speech Recognition ────────────────────────────────────
+    let recognition = null;
+    let srRunning = false;
+
+    document.getElementById('connect-btn').addEventListener('click', async () => {
+      localStorage.setItem('mochi_ble_name', bleNameInput.value.trim());
+      document.getElementById('start-overlay').style.display = 'none';
+      await initBLE();
+      await initAudio();
+      requestAnimationFrame(renderLoop);
+    });
+
+    document.getElementById('voiceonly-btn').addEventListener('click', async () => {
+      document.getElementById('start-overlay').style.display = 'none';
+      await initAudio();
+      requestAnimationFrame(renderLoop);
+    });
+
+
+    // ── Double-tap / double-click → true fullscreen (hides battery, status bar) ──
+    let _lastTap = 0;
+    document.getElementById('robot-screen').addEventListener('touchend', e => {
+      const now = Date.now();
+      if (now - _lastTap < 320) { e.preventDefault(); toggleFS(); }
+      _lastTap = now;
+    }, { passive: false });
+    document.getElementById('robot-screen').addEventListener('dblclick', toggleFS);
+    function toggleFS() {
+      if (!document.fullscreenElement)
+        document.documentElement.requestFullscreen({ navigationUI: 'hide' }).catch(() => {});
+      else document.exitFullscreen().catch(() => {});
+    }
+
+    async function initBLE() {
+      const deviceName = (localStorage.getItem('mochi_ble_name') || 'MOCHI_ESP32_ROBOT').trim();
+      try {
+        // acceptAllDevices shows every nearby BT device in the browser picker so the
+        // user can select their ESP32 even when the name filter doesn't match exactly.
+        // We still show the configured name as a hint in the UI.
+        bleDevice = await navigator.bluetooth.requestDevice({
+          acceptAllDevices: true,
+          optionalServices: [SERVICE_UUID]
+        });
+        const server = await bleDevice.gatt.connect();
+        const service = await server.getPrimaryService(SERVICE_UUID);
+        bleCharacteristic = await service.getCharacteristic(CHARACTERISTIC_UUID);
+        const connectedName = bleDevice.name || deviceName;
+        console.log(`BLE connected: ${connectedName}`);
+        showTranscript(`🔵 BLE connected: ${connectedName}`);
+      } catch (err) {
+        console.warn('BLE skipped/failed:', err.message);
+        if (!err.message?.includes('cancelled') && !err.message?.includes('chosen')) {
+          showError(`BLE: ${err.message || 'not connected'}`);
+        }
+      }
+    }
+
+    let bleWriteQueue = Promise.resolve();
+
+    function sendBLECommand(cmd) {
+      if (!bleCharacteristic || !cmd || cmd === 'NONE') return Promise.resolve(false);
+
+      // Queue writes: movement and LED commands are generated together, and
+      // Web Bluetooth can reject/overlap a second write while the first one
+      // is still in flight.
+      const bytes = new TextEncoder().encode(String(cmd).trim());
+      bleWriteQueue = bleWriteQueue
+        .catch(() => false)
+        .then(async () => {
+          if (!bleCharacteristic) return false;
+          try {
+            if (typeof bleCharacteristic.writeValueWithResponse === 'function') {
+              await bleCharacteristic.writeValueWithResponse(bytes);
+            } else {
+              await bleCharacteristic.writeValue(bytes);
+            }
+            console.log('BLE command sent:', cmd);
+            return true;
+          } catch (err) {
+            console.warn('BLE command failed:', cmd, err);
+            return false;
+          }
+        });
+      return bleWriteQueue;
+    }
+
+    const NUM_BARS = 7;
+    const waveformBars = Array.from({length: NUM_BARS}, (_, i) => document.getElementById('wb' + (i + 1)));
+    let smoothedVolume = 0;
+    let barHeights = new Array(NUM_BARS).fill(6);
+
+    async function initAudio() {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      // echoCancellation: false — critical for Android. When echoCancellation is true,
+      // Android enters VOICE_COMMUNICATION mode which routes ALL audio output (TTS, music)
+      // through the call volume stream with telephony noise reduction, making it sound like
+      // a phone call. Disabling it keeps Android in MEDIA mode (media volume, full quality).
+      micStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: false,
+          noiseSuppression: true,
+          autoGainControl: true
+        }
+      });
+      const source = audioCtx.createMediaStreamSource(micStream);
+      analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 256;
+      analyser.smoothingTimeConstant = 0.5;
+      source.connect(analyser);
+
+      monitorVolume();
+      initSpeechRecognition();
+      // Show wake word hint on startup
+      setTimeout(() => showTranscript('💤 Say "Hey Mochi" to wake me up'), 800);
+    }
+
+    function getRMS() {
+      const buf = new Float32Array(analyser.fftSize);
+      analyser.getFloatTimeDomainData(buf);
+      let sum = 0;
+      for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
+      return Math.sqrt(sum / buf.length);
+    }
+
+    // ── Web Speech Recognition + Wake Word ───────────────────────
+    function resetInactivityTimer() {
+      clearTimeout(inactivityTimer);
+      inactivityTimer = setTimeout(() => {
+        wakeWordMode = true;
+        robotState = 'IDLE';
+        showTranscript('💤 Say "Hey Mochi" to wake me up');
+      }, INACTIVITY_MS);
+    }
+
+    function srStart() {
+      if (!recognition || srRunning) return;
+      try { recognition.start(); } catch (_) {}
+    }
+
+    function srStop() {
+      if (!recognition || !srRunning) return;
+      try { recognition.stop(); } catch (_) {}
+    }
+
+    function initSpeechRecognition() {
+      const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!SR) {
+        showError('Web Speech not supported — use Chrome or Edge');
+        return;
+      }
+
+      recognition = new SR();
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.lang = 'en-US';
+
+      recognition.onstart = () => { srRunning = true; };
+      recognition.onend   = () => {
+        srRunning = false;
+        // Auto-restart unless TTS/LLM pipeline is active
+        if (robotState !== 'SPEAKING' && robotState !== 'THINKING') {
+          setTimeout(srStart, 250);
+        }
+      };
+      recognition.onerror = (e) => {
+        srRunning = false;
+        if (e.error === 'not-allowed') {
+          showError('Microphone access denied');
+          return;
+        }
+        // no-speech / aborted are expected; restart quietly
+        if (robotState !== 'SPEAKING' && robotState !== 'THINKING') {
+          setTimeout(srStart, 500);
+        }
+      };
+
+      recognition.onresult = (event) => {
+        let interim = '';
+        let finalText = '';
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          if (event.results[i].isFinal) {
+            finalText += event.results[i][0].transcript;
+          } else {
+            interim += event.results[i][0].transcript;
+          }
+        }
+
+        // Show live interim in active mode so user sees transcript as they speak
+        if (!wakeWordMode && interim && robotState === 'IDLE') {
+          showTranscript('🎤 ' + interim + '…');
+          robotState = 'LISTENING';
+        }
+
+        if (finalText.trim()) handleSpeechResult(finalText.trim());
+      };
+
+      srStart();
+    }
+
+    function handleSpeechResult(text) {
+      if (wakeWordMode) {
+        // Only act on the wake word
+        const lower = text.toLowerCase();
+        if (/\b(hey\s+mochi|mochi)\b/.test(lower)) {
+          wakeWordMode = false;
+          // Extract anything said after the wake word
+          const afterWake = text.replace(/^.*?\b(hey\s+mochi|mochi)\b\s*/i, '').trim();
+          if (afterWake) {
+            // Command was bundled with the wake word — process it directly
+            processChat(afterWake);
+          } else {
+            // Just the wake word — greet and wait
+            robotState = 'SPEAKING';
+            playTTS('Hey! How can I help?').then(() => {
+              robotState = 'IDLE';
+              resetInactivityTimer();
+            });
+          }
+        }
+        return;
+      }
+
+      // Active mode — ignore if busy
+      if (robotState === 'SPEAKING' || robotState === 'THINKING') return;
+
+      resetInactivityTimer();
+      processChat(text);
+    }
+
+    // Volume monitor for waveform animation only (no VAD needed)
+    function monitorVolume() {
+      setInterval(() => {
+        if (!analyser) return;
+        const rms = getRMS();
+        smoothedVolume = smoothedVolume * 0.75 + rms * 0.25;
+      }, 80);
+    }
+
+    function updateWaveformUI() {
+      const stateText = document.getElementById('state-text');
+      const t = Date.now() * 0.004;
+      const vol = Math.min(1, smoothedVolume * 14);
+
+      if (musicPlaying) stateText.innerText = 'MUSIC';
+      else if (wakeWordMode) stateText.innerText = 'WAKE';
+      else stateText.innerText = robotState;
+
+      waveformBars.forEach((b, i) => {
+        let h, color;
+        if (musicPlaying) {
+          h = 5 + 18 * Math.abs(Math.sin(t * 5 + i * 1.1))
+                + 8  * Math.abs(Math.sin(t * 9.3 + i * 0.6));
+          color = '#ffbc00';
+        } else if (wakeWordMode) {
+          // Slow gentle pulse — waiting for wake word
+          h = 3 + Math.abs(Math.sin(t * 0.9 + i * 1.3)) * 5;
+          color = '#ffaa00';
+        } else if (robotState === 'THINKING') {
+          h = 6 + Math.abs(Math.sin(t + i * 0.7)) * 22;
+          color = '#00d2ff';
+        } else if (robotState === 'LISTENING') {
+          h = 4 + vol * 30 * Math.abs(Math.sin(t * 8 + i * 0.9));
+          h = Math.max(4, h);
+          color = '#00ff99';
+        } else if (robotState === 'SPEAKING') {
+          h = 6 + Math.abs(Math.sin(t * 1.5 + i * 0.9)) * 18;
+          color = '#00d2ff';
+        } else {
+          h = 3 + Math.abs(Math.sin(t * 0.5 + i * 1.1)) * 3;
+          color = '#00d2ff';
+        }
+        barHeights[i] = barHeights[i] * 0.5 + h * 0.5;
+        b.style.height = barHeights[i] + 'px';
+        b.style.background = color;
+      });
+    }
+
+    // ── TTS helper — plays text, returns when done ────────────────
+    async function playTTS(text) {
+      // Pause speech recognition so mic doesn't pick up TTS audio
+      srStop();
+      let played = false;
+      try {
+        const streamUrl = '/api/tts/stream?text=' + encodeURIComponent(text);
+        if (audioCtx && audioCtx.state === 'suspended') await audioCtx.resume();
+
+        await new Promise((resolve, reject) => {
+          const ttsEl = new Audio();
+          ttsEl.preload = 'auto';
+
+          // Route through AudioContext so Android uses media volume (not call volume).
+          // Also enables the real RMS analyser for mouth sync animation.
+          try {
+            const ttsSrc = audioCtx.createMediaElementSource(ttsEl);
+            const ttsGain = audioCtx.createGain();
+            ttsAnalyser = audioCtx.createAnalyser();
+            ttsAnalyser.fftSize = 256;
+            ttsAnalyser.smoothingTimeConstant = 0.4;
+            ttsSrc.connect(ttsAnalyser);
+            ttsAnalyser.connect(ttsGain);
+            ttsGain.connect(audioCtx.destination);
+          } catch (routeErr) {
+            console.warn('AudioContext routing skipped:', routeErr.message);
+            ttsAnalyser = null;
+          }
+
+          ttsEl.onended = () => { mouthOpen = 0; mouthTarget = 0; ttsAnalyser = null; resolve(); };
+          ttsEl.onerror = (e) => { ttsAnalyser = null; reject(e); };
+          ttsEl.src = streamUrl;
+          ttsEl.play().catch(reject);
+        });
+        played = true;
+      } catch (err) {
+        console.warn('Edge TTS failed, using Web Speech:', err.message);
+      }
+
+      if (!played) {
+        await new Promise(resolve => {
+          window.speechSynthesis.cancel();
+          const utter = new SpeechSynthesisUtterance(text);
+          utter.rate = 1.05; utter.pitch = 1.1;
+          const voices = window.speechSynthesis.getVoices();
+          const pick = voices.find(v => v.lang.startsWith('en') && v.name.toLowerCase().includes('female'))
+                    || voices.find(v => v.lang.startsWith('en')) || voices[0];
+          if (pick) utter.voice = pick;
+          utter.onend = resolve; utter.onerror = resolve;
+          window.speechSynthesis.speak(utter);
+        });
+      }
+
+      // Resume speech recognition after TTS finishes
+      setTimeout(srStart, 300);
+    }
+
+    // ── Silent front-camera capture — returns base64 data URL or null ──
+    async function capturePhotoSilent() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
+          audio: false
+        });
+        const video = document.createElement('video');
+        video.srcObject = stream;
+        video.playsInline = true;
+        await video.play();
+        await new Promise(r => setTimeout(r, 500)); // camera warm-up
+
+        const cap = document.createElement('canvas');
+        cap.width = video.videoWidth || 640;
+        cap.height = video.videoHeight || 480;
+        const capCtx = cap.getContext('2d');
+        // Mirror so it's a natural selfie orientation
+        capCtx.translate(cap.width, 0);
+        capCtx.scale(-1, 1);
+        capCtx.drawImage(video, 0, 0);
+        stream.getTracks().forEach(t => t.stop());
+
+        return cap.toDataURL('image/jpeg', 0.85);
+      } catch (err) {
+        console.warn('Silent capture failed:', err.message);
+        return null;
+      }
+    }
+
+    async function processChat(text) {
+      robotState = 'THINKING';
+      if (!text?.trim()) { robotState = 'IDLE'; return; }
+
+      showTranscript('🎤 ' + text);
+
+      try {
+        const chatRes = await fetch('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ history: [{ role: 'user', content: text }] })
+        });
+        if (!chatRes.ok) {
+          showError('Chat failed: ' + chatRes.status);
+          robotState = 'IDLE';
+          return;
+        }
+        const { response } = await chatRes.json();
+
+        let cleaned = response.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+
+        // ── Parse face+move+led tag ──
+        // Format: [[FACE:<expr>,MOVE:<action>,LED:<cmd>]]  (LED field optional)
+        const tagMatch = cleaned.match(/\[\[FACE:([A-Z]+),MOVE:([A-Z_]+)(?:,LED:([A-Z_]+))?\]\]/i);
+        if (tagMatch) {
+          currentExpression = tagMatch[1].toUpperCase();
+          const moveCmd = tagMatch[2].toUpperCase();
+          const ledCmd  = (tagMatch[3] || 'NONE').toUpperCase();
+          sendBLECommand(moveCmd);
+          if (ledCmd !== 'NONE') sendBLECommand(ledCmd);
+        } else {
+          currentExpression = 'HAPPY';
+        }
+
+        // Trigger camera selfie sequence if Mochi chose CAMERA expression
+        if (currentExpression === 'CAMERA') triggerCameraCapture();
+
+        // ── Strip face tag, extract media query and VISION_NEEDED ──
+        let cleanText = cleaned.replace(/\[\[.*?\]\]/g, '').trim();
+
+        let musicQuery = null;
+        let videoQuery = null;
+        let tiktokQuery = null;
+        const musicMatch = cleanText.match(/\nMUSIC_QUERY:\s*(.+)/i) || cleanText.match(/MUSIC_QUERY:\s*(.+)/i);
+        if (musicMatch) {
+          musicQuery = musicMatch[1].trim();
+          cleanText = cleanText.replace(/\n?MUSIC_QUERY:.+/i, '').trim();
+        }
+        const videoMatch = cleanText.match(/\nVIDEO_QUERY:\s*(.+)/i) || cleanText.match(/VIDEO_QUERY:\s*(.+)/i);
+        if (videoMatch) {
+          videoQuery = videoMatch[1].trim();
+          cleanText = cleanText.replace(/\n?VIDEO_QUERY:.+/i, '').trim();
+        }
+        const tiktokMatch = cleanText.match(/\nTIKTOK_QUERY:\s*(.+)/i) || cleanText.match(/TIKTOK_QUERY:\s*(.+)/i);
+        if (tiktokMatch) {
+          tiktokQuery = tiktokMatch[1].trim();
+          cleanText = cleanText.replace(/\n?TIKTOK_QUERY:.+/i, '').trim();
+        }
+        const asksForTikTok = /\b(tiktok|tik tok|shot[io]?|short video|girl video|reels?)\b/i.test(text);
+        if (asksForTikTok && !tiktokQuery) {
+          tiktokQuery = videoQuery || musicQuery || text;
+          videoQuery = null;
+          musicQuery = null;
+        }
+        if (tiktokQuery) {
+          videoQuery = null;
+          musicQuery = null;
+        }
+
+        let visionNeeded = false;
+        if (/VISION_NEEDED/i.test(cleanText)) {
+          visionNeeded = true;
+          cleanText = cleanText.replace(/\n?VISION_NEEDED\s*/gi, '').trim();
+        }
+
+        // ── Speak Mochi's first reply ──
+        robotState = 'SPEAKING';
+
+        // Pre-resolve media in parallel while TTS plays.
+        // /api/music/url returns the DIRECT CDN URL so the browser streams
+        // from YouTube's CDN — not through the Replit proxy — which prevents
+        // the proxy from killing the connection on long songs (>2 min).
+        let musicUrlPromise = null;
+        if (musicQuery) {
+          showTranscript('🎵 Searching: ' + musicQuery);
+          musicUrlPromise = fetch('/api/music/url?q=' + encodeURIComponent(musicQuery))
+            .then(r => r.ok ? r.json() : Promise.reject('not found'))
+            .catch(() => null);
+        }
+        let videoUrlPromise = null;
+        if (videoQuery) {
+          showTranscript('🎬 Finding: ' + videoQuery);
+          videoUrlPromise = fetch('/api/video/url?q=' + encodeURIComponent(videoQuery))
+            .then(r => r.ok ? r.json() : Promise.reject('not found'))
+            .catch(() => null);
+        }
+        let tiktokUrlPromise = null;
+        if (tiktokQuery) {
+          showTranscript('📱 Finding TikTok: ' + tiktokQuery);
+          tiktokUrlPromise = fetch('/api/tiktok/url?q=' + encodeURIComponent(tiktokQuery))
+            .then(r => r.ok ? r.json() : Promise.reject('not found'))
+            .catch(() => null);
+        }
+
+        await playTTS(cleanText);
+
+        robotState = 'IDLE';
+        currentExpression = 'IDLE';
+        mouthOpen = 0; mouthTarget = 0;
+
+        // ── Vision: capture photo and ask the vision LLM ──
+        if (visionNeeded) {
+          robotState = 'THINKING';
+          currentExpression = 'CAMERA';
+          showTranscript('👁 Looking at you...');
+
+          const photoData = await capturePhotoSilent();
+
+          if (photoData) {
+            try {
+              const visionRes = await fetch('/api/vision', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ image: photoData, question: text })
+              });
+              if (visionRes.ok) {
+                const { response: visionReply } = await visionRes.json();
+                const visionText = visionReply
+                  .replace(/\[\[.*?\]\]/g, '')
+                  .replace(/VISION_NEEDED/gi, '')
+                  .trim();
+                if (visionText) {
+                  robotState = 'SPEAKING';
+                  currentExpression = 'HAPPY';
+                  showTranscript('👁 ' + visionText.slice(0, 80) + (visionText.length > 80 ? '…' : ''));
+                  await playTTS(visionText);
+                }
+              } else {
+                showError('Vision failed: ' + visionRes.status);
+              }
+            } catch (vErr) {
+              console.warn('Vision pipeline error:', vErr.message);
+              showError('Could not analyze photo');
+            }
+          } else {
+            showError('Camera not available');
+          }
+
+          robotState = 'IDLE';
+          currentExpression = 'IDLE';
+          mouthOpen = 0; mouthTarget = 0;
+        }
+
+        // ── Audio-only music: play direct CDN stream ──
+        if (musicQuery && musicUrlPromise) {
+          try {
+            const info = await musicUrlPromise;
+            if (info?.url) {
+              currentExpression = 'MUSIC';
+              // Play the direct CDN URL — browser streams straight from YouTube,
+              // bypassing Replit's proxy so long songs never get cut off.
+              playMusicUrl(info.title || musicQuery, info.url);
+            } else {
+              showError('Could not find that song');
+              currentExpression = 'IDLE';
+            }
+          } catch (err) {
+            console.warn('Music failed:', err.message);
+            showError('Could not find that song');
+            currentExpression = 'IDLE';
+          }
+        }
+
+        // ── Video: play the original YouTube watch URL in the video modal ──
+        if (videoQuery && videoUrlPromise) {
+          try {
+            const info = await videoUrlPromise;
+            if (info?.url) {
+              playVideoUrl(info.title || videoQuery, info.url, info.provider || 'youtube');
+            } else {
+              showError('Could not find that video');
+              currentExpression = 'IDLE';
+            }
+          } catch (err) {
+            console.warn('Video failed:', err.message);
+            showError('Could not find that video');
+            currentExpression = 'IDLE';
+          }
+        }
+        if (tiktokQuery && tiktokUrlPromise) {
+          try {
+            const info = await tiktokUrlPromise;
+            if (info?.url) {
+              playVideoUrl(info.title || tiktokQuery, info.url, 'tiktok');
+            } else {
+              showError('Could not find that TikTok video');
+              currentExpression = 'IDLE';
+            }
+          } catch (err) {
+            console.warn('TikTok failed:', err.message);
+            showError('Could not find that TikTok video');
+            currentExpression = 'IDLE';
+          }
+        }
+
+      } catch (err) {
+        console.error('Pipeline failure:', err);
+        showError(err.message || 'Pipeline error');
+        robotState = 'IDLE';
+        mouthOpen = 0; mouthTarget = 0;
+      }
+    }
+
+    // ── MOUTH ANIMATION ──────────────────────────────────────────────
+    let mouthOpen = 0;
+    let mouthTarget = 0;
+    let ttsAnalyser = null;
+    let _ttsTDBuf = null; // Float32Array — time domain buffer for RMS
+
+    function updateMouth() {
+      if (robotState === 'SPEAKING' && ttsAnalyser) {
+        // Time-domain RMS — same proven approach as the VAD microphone analyser.
+        // Gives a clean 0-1 amplitude signal that tracks every syllable.
+        if (!_ttsTDBuf) _ttsTDBuf = new Float32Array(ttsAnalyser.fftSize);
+        ttsAnalyser.getFloatTimeDomainData(_ttsTDBuf);
+        let sum = 0;
+        for (let i = 0; i < _ttsTDBuf.length; i++) sum += _ttsTDBuf[i] * _ttsTDBuf[i];
+        const rms = Math.sqrt(sum / _ttsTDBuf.length);
+        // Scale so typical speech (rms ~0.05–0.25) fills most of the 0–1 range
+        mouthTarget = Math.min(1, rms * 12);
+      } else if (robotState === 'SPEAKING') {
+        // Oscillation fallback when analyser isn't attached (Web Speech API path)
+        const t = Date.now() * 0.001;
+        mouthTarget = Math.max(0, Math.sin(t * 14) * 0.4 + Math.sin(t * 8) * 0.3 + 0.2);
+      } else if (currentExpression === 'BURGER' || currentExpression === 'JUICE') {
+        mouthTarget = (Math.sin(Date.now() * 0.012) + 1) * 0.4;
+      } else {
+        mouthTarget = 0;
+      }
+      const lerpSpeed = mouthTarget > mouthOpen ? 0.85 : 0.55;
+      mouthOpen += (mouthTarget - mouthOpen) * lerpSpeed;
+      if (mouthOpen < 0.01) mouthOpen = 0;
+    }
+
+    function drawCuteMouth(cx, cy) {
+      const isEating = (currentExpression === 'BURGER' || currentExpression === 'JUICE');
+      if (robotState !== 'SPEAKING' && !isEating) return;
+
+      const my = cy + 125;
+      // Width grows slightly; height grows a lot — gives a clear "talking" look
+      const halfW = 28 + mouthOpen * 24;       // 28 closed → 52 wide open
+      const halfH = Math.max(3, mouthOpen * 38); // 3 closed → 38 wide open
+
+      ctx.save();
+      ctx.translate(cx, my);
+
+      // Dark mouth interior
+      ctx.beginPath();
+      ctx.ellipse(0, 0, halfW, halfH, 0, 0, Math.PI * 2);
+      ctx.fillStyle = '#050e28';
+      ctx.fill();
+
+      // Glowing cyan lip outline
+      ctx.shadowColor = '#00d2ff';
+      ctx.shadowBlur = 14;
+      ctx.strokeStyle = '#3ad8ff';
+      ctx.lineWidth = 4;
+      ctx.stroke();
+
+      // Upper lip highlight when open
+      if (mouthOpen > 0.15) {
+        ctx.beginPath();
+        ctx.ellipse(0, -halfH * 0.55, halfW * 0.55, halfH * 0.18, 0, Math.PI, 0);
+        ctx.strokeStyle = 'rgba(58,216,255,0.35)';
+        ctx.lineWidth = 2;
+        ctx.shadowBlur = 0;
+        ctx.stroke();
+      }
+
+      ctx.restore();
+    }
+
+    // ── REALISTIC EYE BLINK ANIMATION ──────────────────────────────
+    let nextBlinkAt = Date.now() + 1500 + Math.random() * 2500;
+    let blinkStartAt = 0;
+    const BLINK_DUR = 220; // Fast realistic 220ms blink cycle
+
+    function getBlinkScale() {
+      const now = Date.now();
+      if (blinkStartAt === 0 && now >= nextBlinkAt) {
+        blinkStartAt = now;
+        nextBlinkAt = now + BLINK_DUR + 2000 + Math.random() * 3000;
+      }
+      if (blinkStartAt === 0) return 1.0;
+
+      const elapsed = now - blinkStartAt;
+      if (elapsed >= BLINK_DUR) { blinkStartAt = 0; return 1.0; }
+
+      const progress = elapsed / BLINK_DUR;
+      // Smooth sinusoidal squeeze: 1.0 -> 0.05 -> 1.0
+      return 0.05 + 0.95 * Math.abs(Math.cos(progress * Math.PI));
+    }
+
+    // ── WINK STATE ────────────────────────────────────────────────
+    let winkProgress = 0;
+    let winkPhase = 'none';
+    let winkHoldTimer = 0;
+
+    function updateWink() {
+      const winkRequested = (currentExpression === 'WINK');
+      if (winkRequested && winkPhase === 'none') winkPhase = 'closing';
+
+      if (winkPhase === 'closing') {
+        winkProgress += 0.08;
+        if (winkProgress >= 1) { winkProgress = 1; winkPhase = 'held'; winkHoldTimer = 30; }
+      } else if (winkPhase === 'held') {
+        if (--winkHoldTimer <= 0) winkPhase = 'opening';
+      } else if (winkPhase === 'opening') {
+        winkProgress -= 0.08;
+        if (winkProgress <= 0) {
+          winkProgress = 0;
+          winkPhase = 'none';
+          if (currentExpression === 'WINK') currentExpression = 'IDLE';
+        }
+      }
+    }
+
+    // ── GAZE LOOK AROUND ──────────────────────────────────────────
+    let gazeX = 0, gazeY = 0;
+    let gazeTargetX = 0, gazeTargetY = 0;
+    let gazeTimer = 0;
+
+    function updateGaze() {
+      if (--gazeTimer <= 0) {
+        const straight = Math.random() < 0.3;
+        gazeTargetX = straight ? 0 : (Math.random() - 0.5) * 40;
+        gazeTargetY = straight ? 0 : (Math.random() - 0.5) * 15;
+        gazeTimer = 80 + Math.random() * 180;
+      }
+      gazeX += (gazeTargetX - gazeX) * 0.04;
+      gazeY += (gazeTargetY - gazeY) * 0.04;
+    }
+
+    // ── MAIN RENDER LOOP ─────────────────────────────────────────
+    function renderLoop() {
+      updateWaveformUI();
+      updateWink();
+      updateGaze();
+
+      // Advance camera anim phase from 'raising' → 'held' once close enough
+      if (cameraAnimPhase === 'raising' && Math.abs(cameraAnimY - cameraAnimTarget) < 2) {
+        cameraAnimPhase = 'held';
+        cameraAnimY = cameraAnimTarget;
+      }
+
+      ctx.fillStyle = '#000000';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      const centerX = canvas.width / 2;
+      const centerY = canvas.height / 2;
+      // Draw in a fixed logical coordinate system, then scale it down to
+      // the shortest viewport dimension. This prevents the wide portrait
+      // face/accessories from being cropped in phone landscape mode.
+      const faceScale = Math.min(
+        1,
+        Math.max(0.35, (canvas.width - 24) / 640),
+        Math.max(0.35, (canvas.height - 24) / 560)
+      );
+      const eyeRadius = 90;
+      const eyeOffset = 220;
+
+      const blinkScale = getBlinkScale();
+
+      ctx.save();
+      ctx.translate(centerX, centerY);
+      ctx.scale(faceScale, faceScale);
+
+      ctx.save();
+      ctx.translate(gazeX, gazeY);
+
+      // Back layer of headphones (behind eyes)
+      if (currentExpression === 'MUSIC') drawHeadphonesBack(0, 0, eyeOffset, eyeRadius);
+
+      drawEye(-eyeOffset, 0, eyeRadius, true, blinkScale);
+      drawEye(eyeOffset, 0, eyeRadius, false, blinkScale);
+
+      // Front layer of headphones (in front of eyes — cushion ring + accents)
+      if (currentExpression === 'MUSIC') drawHeadphonesFront(0, 0, eyeOffset, eyeRadius);
+
+      updateMouth();
+      drawCuteMouth(0, 0);
+
+      ctx.restore();
+
+      drawAccessories(0, 0);
+      drawCameraAccessory(0, 0);
+      ctx.restore();
+
+      requestAnimationFrame(renderLoop);
+    }
+
+    function drawEye(x, y, r, isLeft, blinkScale) {
+      ctx.save();
+      ctx.translate(x, y);
+
+      // Realistic Vertical Eyelid Blink scaling
+      ctx.scale(1, blinkScale);
+
+      const isHappyMode = (currentExpression === 'HAPPY');
+      let cyanColor = '#3ad8ff';
+      let darkBlue = '#121da0';
+
+      if (currentExpression === 'ANGRY') {
+        cyanColor = '#ff3a3a';
+        darkBlue = '#a01212';
+      }
+
+      // Handle Wink action on Right Eye
+      if (!isLeft && winkProgress > 0) {
+        ctx.scale(1, 1 - winkProgress * 0.95);
+      }
+
+      if (currentExpression === 'SAD') {
+        ctx.beginPath();
+        ctx.arc(0, 15, r, Math.PI * 1.15, Math.PI * 1.85);
+        ctx.lineWidth = 18;
+        ctx.strokeStyle = cyanColor;
+        ctx.shadowColor = cyanColor;
+        ctx.shadowBlur = 14;
+        ctx.lineCap = 'round';
+        ctx.stroke();
+        ctx.restore();
+        return;
+      }
+
+      _drawNormalEye(r, cyanColor, darkBlue, isHappyMode);
+      ctx.restore();
+    }
+
+    function _drawNormalEye(r, cyanColor, darkBlue, isHappyMode) {
+      if (isHappyMode) {
+        // Dome Happy Eye Shape
+        ctx.beginPath();
+        ctx.arc(0, 10, r, Math.PI, 0, false);
+        ctx.lineTo(r, 16);
+        ctx.lineTo(-r, 16);
+        ctx.closePath();
+        ctx.fillStyle = darkBlue;
+        ctx.fill();
+
+        ctx.beginPath();
+        ctx.arc(0, 0, r, Math.PI, 0, false);
+        ctx.lineTo(r, 4);
+        ctx.lineTo(-r, 4);
+        ctx.closePath();
+        ctx.fillStyle = cyanColor;
+        ctx.shadowColor = cyanColor;
+        ctx.shadowBlur = 12;
+        ctx.fill();
+      } else {
+        // Full Rounded Tech Eye
+        ctx.beginPath();
+        ctx.arc(0, 8, r, 0, Math.PI * 2);
+        ctx.fillStyle = darkBlue;
+        ctx.fill();
+
+        ctx.beginPath();
+        ctx.arc(0, 0, r, 0, Math.PI * 2);
+        ctx.fillStyle = cyanColor;
+        ctx.shadowColor = cyanColor;
+        ctx.shadowBlur = 12;
+        ctx.fill();
+      }
+    }
+
+    // ── REALISTIC HEADPHONES (drawn in two passes around the eyes) ──────────
+
+    function drawHeadphonesBack(cx, cy, eo, r) {
+      ctx.save();
+
+      // ── Headband ──────────────────────────────────────────────────
+      const bandR = eo + r * 0.28;
+      const bandCY = cy - r * 0.18;
+
+      // Drop shadow
+      ctx.beginPath();
+      ctx.arc(cx, bandCY, bandR, Math.PI * 1.06, Math.PI * -0.06, false);
+      ctx.strokeStyle = 'rgba(0,0,0,0.55)';
+      ctx.lineWidth = 30;
+      ctx.lineCap = 'round';
+      ctx.filter = 'blur(4px)';
+      ctx.stroke();
+      ctx.filter = 'none';
+
+      // Band body
+      ctx.beginPath();
+      ctx.arc(cx, bandCY, bandR, Math.PI * 1.06, Math.PI * -0.06, false);
+      ctx.strokeStyle = '#1e1e1e';
+      ctx.lineWidth = 24;
+      ctx.lineCap = 'round';
+      ctx.stroke();
+
+      // Band mid-ridge
+      ctx.beginPath();
+      ctx.arc(cx, bandCY, bandR, Math.PI * 1.06, Math.PI * -0.06, false);
+      ctx.strokeStyle = '#3a3a3a';
+      ctx.lineWidth = 14;
+      ctx.stroke();
+
+      // Band top sheen
+      ctx.beginPath();
+      ctx.arc(cx, bandCY, bandR, Math.PI * 1.1, Math.PI * -0.1, false);
+      ctx.strokeStyle = 'rgba(255,255,255,0.09)';
+      ctx.lineWidth = 5;
+      ctx.stroke();
+
+      // ── Cup outer shell (behind eyes) ──────────────────────────────
+      [-1, 1].forEach(side => {
+        const ex = cx + side * eo;
+        ctx.save();
+        ctx.translate(ex, cy);
+
+        const cw = r * 1.62;
+        const ch = r * 1.58;
+
+        // Cup shadow
+        ctx.beginPath();
+        ctx.ellipse(0, 0, cw * 0.54, ch * 0.54, 0, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(0,0,0,0.6)';
+        ctx.filter = 'blur(6px)';
+        ctx.fill();
+        ctx.filter = 'none';
+
+        // Cup body gradient
+        const g = ctx.createRadialGradient(-side * r * 0.12, -r * 0.12, r * 0.04, 0, 0, cw * 0.52);
+        g.addColorStop(0, '#3c3c3c');
+        g.addColorStop(0.55, '#1e1e1e');
+        g.addColorStop(1, '#0d0d0d');
+        ctx.beginPath();
+        ctx.ellipse(0, 0, cw * 0.5, ch * 0.5, 0, 0, Math.PI * 2);
+        ctx.fillStyle = g;
+        ctx.fill();
+
+        // Outer rim
+        ctx.strokeStyle = '#444';
+        ctx.lineWidth = 2.5;
+        ctx.stroke();
+
+        ctx.restore();
+      });
+
+      ctx.restore();
+    }
+
+    function drawHeadphonesFront(cx, cy, eo, r) {
+      const pulse = 0.65 + 0.35 * Math.sin(Date.now() * 0.0028);
+      ctx.save();
+
+      [-1, 1].forEach(side => {
+        const ex = cx + side * eo;
+        ctx.save();
+        ctx.translate(ex, cy);
+
+        // Foam cushion ring — wraps around the eye, giving the "clamped on" look
+        ctx.beginPath();
+        ctx.ellipse(0, 0, r * 1.16, r * 1.13, 0, 0, Math.PI * 2);
+        ctx.strokeStyle = '#140e1e';
+        ctx.lineWidth = 22;
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.ellipse(0, 0, r * 1.1, r * 1.07, 0, 0, Math.PI * 2);
+        ctx.strokeStyle = '#251830';
+        ctx.lineWidth = 10;
+        ctx.stroke();
+
+        // Gold accent ring
+        ctx.beginPath();
+        ctx.ellipse(0, 0, r * 1.22, r * 1.19, 0, 0, Math.PI * 2);
+        ctx.strokeStyle = '#ffbc00';
+        ctx.lineWidth = 2.5;
+        ctx.shadowColor = '#ffbc00';
+        ctx.shadowBlur = 14;
+        ctx.stroke();
+        ctx.shadowBlur = 0;
+
+        // Cup outer rim
+        const cw = r * 1.62, ch = r * 1.58;
+        ctx.beginPath();
+        ctx.ellipse(0, 0, cw * 0.5, ch * 0.5, 0, 0, Math.PI * 2);
+        ctx.strokeStyle = '#555';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        // Sheen highlight
+        ctx.beginPath();
+        ctx.ellipse(-side * r * 0.28, -r * 0.32, r * 0.32, r * 0.18, -0.45, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(255,255,255,0.07)';
+        ctx.fill();
+
+        // Pulsing LED dot
+        ctx.beginPath();
+        ctx.arc(side * r * 0.62, -r * 0.58, 5.5, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(0,210,255,${pulse})`;
+        ctx.shadowColor = '#00d2ff';
+        ctx.shadowBlur = 12;
+        ctx.fill();
+        ctx.shadowBlur = 0;
+
+        ctx.restore();
+      });
+
+      ctx.restore();
+    }
+
+    // ── EATING & OTHER ACCESSORIES ──────────────────────────────────
+    function drawAccessories(cx, cy) {
+      const t = Date.now() * 0.005;
+
+      // REALISTIC EATING: BURGER BITE ANIMATION
+      if (currentExpression === 'BURGER') {
+        ctx.save();
+        const chewCycle = Math.sin(t * 2);
+        const burgerY = cy + 90 + chewCycle * 8; // Bouncing/bip movement
+        
+        ctx.font = '64px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+
+        // Animated Bite Effect (Scale down slightly when "chewing")
+        const scale = 1 + chewCycle * 0.08;
+        ctx.translate(cx, burgerY);
+        ctx.scale(scale, scale);
+        ctx.fillText('🍔', 0, 0);
+
+        ctx.restore();
+      } 
+      
+      // REALISTIC EATING: JUICE DRINKING ANIMATION
+      else if (currentExpression === 'JUICE') {
+        ctx.save();
+        const sipCycle = Math.cos(t * 2);
+        const juiceY = cy + 95 + sipCycle * 5;
+
+        ctx.font = '64px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+
+        ctx.translate(cx, juiceY);
+        ctx.fillText('🧃', 0, 0);
+
+        ctx.restore();
+      }
+
+      // NEWS / MICROPHONE
+      if (currentExpression === 'NEWS') {
+        drawNewsMic(cx, cy);
+      }
+    }
+
+    function drawNewsMic(cx, cy) {
+      ctx.save();
+      // Held lower-right, capsule tilted toward face
+      ctx.translate(cx + 75, cy + 215);
+      ctx.rotate(-0.3);
+
+      const hw = 24, hh = 80;
+
+      // Handle gradient
+      const hg = ctx.createLinearGradient(-hw / 2, 0, hw / 2, 0);
+      hg.addColorStop(0, '#111'); hg.addColorStop(0.4, '#555'); hg.addColorStop(1, '#111');
+      ctx.fillStyle = hg;
+      ctx.beginPath(); ctx.roundRect(-hw / 2, 0, hw, hh, 5); ctx.fill();
+
+      // Grip ridges
+      ctx.strokeStyle = 'rgba(0,0,0,0.45)'; ctx.lineWidth = 2;
+      for (let i = 0; i < 6; i++) {
+        const ry = 14 + i * 11;
+        ctx.beginPath(); ctx.moveTo(-hw / 2 + 3, ry); ctx.lineTo(hw / 2 - 3, ry); ctx.stroke();
+      }
+
+      // Red station band
+      const by = hh * 0.3;
+      ctx.fillStyle = '#c0392b';
+      ctx.beginPath(); ctx.roundRect(-hw / 2, by, hw, 15, 2); ctx.fill();
+      ctx.fillStyle = '#fff'; ctx.font = 'bold 7px sans-serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText('NEWS', 0, by + 7.5);
+
+      // Capsule head
+      const cw = 27, ch = 50;
+      const cg = ctx.createLinearGradient(-cw / 2, -ch, cw / 2, 0);
+      cg.addColorStop(0, '#2a2a2a'); cg.addColorStop(0.5, '#888'); cg.addColorStop(1, '#3a3a3a');
+      ctx.fillStyle = cg;
+      ctx.beginPath(); ctx.roundRect(-cw / 2, -ch, cw, ch, [14, 14, 0, 0]); ctx.fill();
+
+      // Mesh lines
+      ctx.strokeStyle = 'rgba(0,0,0,0.5)'; ctx.lineWidth = 1.8;
+      for (let i = 0; i < 5; i++) {
+        const ly = -ch + 9 + i * 9;
+        const hw2 = (cw / 2 - 3) * Math.sin(((i + 1) / 6) * Math.PI);
+        ctx.beginPath(); ctx.moveTo(-hw2, ly); ctx.lineTo(hw2, ly); ctx.stroke();
+      }
+      ctx.beginPath(); ctx.moveTo(0, -ch + 5); ctx.lineTo(0, -5); ctx.stroke();
+
+      // Sheen
+      ctx.fillStyle = 'rgba(255,255,255,0.08)';
+      ctx.beginPath(); ctx.ellipse(-cw * 0.15, -ch * 0.6, cw * 0.2, ch * 0.2, -0.3, 0, Math.PI * 2); ctx.fill();
+
+      // Collar ring
+      ctx.fillStyle = '#222'; ctx.fillRect(-cw / 2 - 2, -6, cw + 4, 10);
+      ctx.fillStyle = '#666'; ctx.fillRect(-cw / 2, -4, cw, 6);
+
+      ctx.restore();
+    }
+  </script>
+</body>
+</html>
