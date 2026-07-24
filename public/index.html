@@ -734,12 +734,14 @@
       await initBLE();
       await initAudio();
       requestAnimationFrame(renderLoop);
+      startFaceTracking(); // auto-start face tracking — no button needed
     });
 
     document.getElementById('voiceonly-btn').addEventListener('click', async () => {
       document.getElementById('start-overlay').style.display = 'none';
       await initAudio();
       requestAnimationFrame(renderLoop);
+      startFaceTracking(); // auto-start face tracking — no button needed
     });
 
 
@@ -755,6 +757,88 @@
       if (!document.fullscreenElement)
         document.documentElement.requestFullscreen({ navigationUI: 'hide' }).catch(() => {});
       else document.exitFullscreen().catch(() => {});
+    }
+
+    // ── FACE TRACKING — auto-starts, no button ───────────────────────
+    // Uses FaceDetector API (Chrome Android). Runs a hidden <video> from the
+    // front camera and polls every 200 ms. Maps face position to servo and
+    // motor commands so the robot's head follows whoever it's looking at.
+    let _ftStream  = null;
+    let _ftVideo   = null;
+    let _ftTimer   = null;
+    let _ftZoneV   = null;   // last vertical zone:   'UP'|'CENTER'|'DOWN'
+    let _ftZoneH   = null;   // last horizontal zone: 'LEFT'|'CENTER'|'RIGHT'
+    let _ftNoFace  = 0;      // frames with no face detected
+    let _ftHCooldown = 0;    // timestamp — don't send H nudge before this
+
+    async function startFaceTracking() {
+      if (!('FaceDetector' in window)) {
+        console.warn('[FaceTrack] FaceDetector API not available on this browser');
+        return;
+      }
+      try {
+        _ftStream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'user', width: { ideal: 320 }, height: { ideal: 240 } },
+          audio: false
+        });
+        _ftVideo = document.createElement('video');
+        _ftVideo.srcObject = _ftStream;
+        _ftVideo.playsInline = true;
+        _ftVideo.muted = true;
+        await _ftVideo.play();
+
+        const detector = new FaceDetector({ fastMode: true, maxDetectedFaces: 1 });
+        _ftZoneV = null; _ftZoneH = null; _ftNoFace = 0;
+        console.log('[FaceTrack] started');
+
+        function loop() {
+          if (!_ftStream) return;
+          detector.detect(_ftVideo).then(faces => {
+            if (faces.length > 0) {
+              _ftNoFace = 0;
+              const box = faces[0].boundingBox;
+              const vw  = _ftVideo.videoWidth  || 320;
+              const vh  = _ftVideo.videoHeight || 240;
+
+              // Normalised centre of face (0 = top/left, 1 = bottom/right)
+              const cx = (box.x + box.width  / 2) / vw;
+              const cy = (box.y + box.height / 2) / vh;
+
+              // ── Vertical → servo ──
+              const zv = cy < 0.38 ? 'UP' : cy > 0.62 ? 'DOWN' : 'CENTER';
+              if (zv !== _ftZoneV) {
+                _ftZoneV = zv;
+                sendBLECommand(
+                  zv === 'UP'   ? 'LOOK_UP'     :
+                  zv === 'DOWN' ? 'LOOK_DOWN'   : 'LOOK_CENTER'
+                );
+              }
+
+              // ── Horizontal → motor nudge (800 ms cooldown to avoid spinning) ──
+              const zh = cx < 0.30 ? 'LEFT' : cx > 0.70 ? 'RIGHT' : 'CENTER';
+              if (zh !== 'CENTER' && zh !== _ftZoneH && Date.now() > _ftHCooldown) {
+                _ftZoneH = zh;
+                _ftHCooldown = Date.now() + 800;
+                sendBLECommand(zh); // 'LEFT' or 'RIGHT' motor nudge
+              } else if (zh === 'CENTER') {
+                _ftZoneH = 'CENTER';
+              }
+            } else {
+              _ftNoFace++;
+              // After ~3 s of no face return to centre
+              if (_ftNoFace > 15) {
+                _ftNoFace = 0;
+                if (_ftZoneV !== 'CENTER') { _ftZoneV = 'CENTER'; sendBLECommand('LOOK_CENTER'); }
+              }
+            }
+          }).catch(() => {}).finally(() => {
+            if (_ftStream) _ftTimer = setTimeout(loop, 200);
+          });
+        }
+        loop();
+      } catch (err) {
+        console.warn('[FaceTrack] camera error:', err.message);
+      }
     }
 
     async function initBLE() {
