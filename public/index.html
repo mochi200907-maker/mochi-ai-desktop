@@ -556,23 +556,20 @@
     function playMusicUrl(title, url) {
       stopMusic();
       isMediaPlaying = true;
-      srStop();
       musicAudio = new Audio(url);
       musicAudio.preload = 'auto';
-      musicAudio.onended = () => { stopMusic(); isMediaPlaying = false; setTimeout(srStart, 300); };
+      musicAudio.onended = () => { stopMusic(); isMediaPlaying = false; };
       musicAudio.onerror = () => {
         const code = musicAudio?.error?.code;
         console.warn('Music audio error, code:', code);
         showError('Music playback error');
         stopMusic();
         isMediaPlaying = false;
-        setTimeout(srStart, 300);
       };
       musicAudio.play().catch(err => {
         showError('Music play: ' + err.message);
         stopMusic();
         isMediaPlaying = false;
-        setTimeout(srStart, 300);
       });
       musicPlaying = true;
       showTranscript('🎵 ' + title);
@@ -664,7 +661,6 @@
       isMediaPlaying = true;  // block STT auto-restart until video ends
       currentExpression = 'MUSIC';
       showTranscript('🎬 ' + (title || 'Playing video'));
-      srStop(); // stop listening while video is playing
     }
 
     function stopVideo() {
@@ -689,7 +685,6 @@
       musicPlaying = false;
       isMediaPlaying = false;
       if (currentExpression === 'MUSIC') currentExpression = 'IDLE';
-      srStart(); // resume listening after video is closed
     }
 
     document.getElementById('video-stop').addEventListener('click', stopVideo);
@@ -730,10 +725,6 @@
     let wakeWordMode = false;
     let inactivityTimer = null;
     const INACTIVITY_MS = 2 * 60 * 1000;  // 2 minutes
-
-    // ── Web Speech Recognition ────────────────────────────────────
-    let recognition = null;
-    let srRunning = false;
 
     document.getElementById('connect-btn').addEventListener('click', async () => {
       localStorage.setItem('mochi_ble_name', bleNameInput.value.trim());
@@ -828,10 +819,8 @@
       // Must resume — Android starts AudioContext suspended even inside a gesture.
       try { await audioCtx.resume(); } catch (_) {}
 
-      // echoCancellation:false keeps Android in MEDIA audio mode (not call/telephony).
-      micStream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: false, noiseSuppression: true, autoGainControl: true }
-      });
+      // Plain audio:true — no special constraints that can break Web Audio on Android.
+      micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
       const source = audioCtx.createMediaStreamSource(micStream);
       analyser = audioCtx.createAnalyser();
@@ -839,11 +828,7 @@
       analyser.smoothingTimeConstant = 0.5;
       source.connect(analyser);
 
-      // Expose source so initMediaRecorderSTT can attach its processor to the same node.
-      audioCtx._micSource = source;
-
-      monitorVolume();
-      initSpeechRecognition();
+      initGroqSTT(source);
     }
 
     function getRMS() {
@@ -854,128 +839,44 @@
       return Math.sqrt(sum / buf.length);
     }
 
-    // ── Web Speech Recognition ────────────────────────────────────
     function resetInactivityTimer() {
       clearTimeout(inactivityTimer);
-      inactivityTimer = setTimeout(() => {
-        robotState = 'IDLE';
-      }, INACTIVITY_MS);
+      inactivityTimer = setTimeout(() => { robotState = 'IDLE'; }, INACTIVITY_MS);
     }
 
-    function srStart() {
-      if (!recognition || srRunning) return;
-      try { recognition.start(); } catch (_) {}
-    }
-
-    function srStop() {
-      if (!recognition || !srRunning) return;
-      try { recognition.stop(); } catch (_) {}
-    }
-
-    // ── STT engine selection ──────────────────────────────────────
-    // Android Chrome either doesn't support webkitSpeechRecognition or
-    // returns empty results when echoCancellation is off (which we need
-    // to avoid the telephony audio-routing bug). Use MediaRecorder + VAD
-    // + Groq Whisper on Android, and Web Speech API everywhere else.
-    function isAndroid() {
-      return /Android/i.test(navigator.userAgent);
-    }
-
-    function initSpeechRecognition() {
-      const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-
-      if (isAndroid() || !SR) {
-        // Android or no Web Speech API → use MediaRecorder + Whisper fallback
-        initMediaRecorderSTT();
-        return;
-      }
-
-      recognition = new SR();
-      recognition.continuous = true;
-      recognition.interimResults = true;
-      recognition.lang = 'en-US';
-
-      recognition.onstart = () => { srRunning = true; };
-      recognition.onend   = () => {
-        srRunning = false;
-        // Auto-restart unless TTS/LLM pipeline is active OR media is playing
-        if (robotState !== 'SPEAKING' && robotState !== 'THINKING' && !isMediaPlaying) {
-          setTimeout(srStart, 250);
-        }
-      };
-      recognition.onerror = (e) => {
-        srRunning = false;
-        if (e.error === 'not-allowed') {
-          showError('Microphone access denied');
-          return;
-        }
-        // no-speech / aborted are expected; restart quietly — but not while media plays
-        if (robotState !== 'SPEAKING' && robotState !== 'THINKING' && !isMediaPlaying) {
-          setTimeout(srStart, 500);
-        }
-      };
-
-      recognition.onresult = (event) => {
-        let interim = '';
-        let finalText = '';
-        for (let i = event.resultIndex; i < event.results.length; i++) {
-          if (event.results[i].isFinal) {
-            finalText += event.results[i][0].transcript;
-          } else {
-            interim += event.results[i][0].transcript;
-          }
-        }
-
-        // Show live interim transcript while user is speaking
-        if (interim && robotState === 'IDLE' && !isMediaPlaying) {
-          showTranscript('🎤 ' + interim + '…');
-          robotState = 'LISTENING';
-        }
-
-        if (finalText.trim()) handleSpeechResult(finalText.trim());
-      };
-
-      srStart();
-    }
-
-    // ── ScriptProcessorNode VAD + WAV capture → Groq Whisper ───────
-    // No MediaRecorder, no codec negotiation. ScriptProcessorNode fires
-    // onaudioprocess with real PCM on every Android Chrome version.
-    // Raw Float32 samples → WAV blob → POST /api/stt → Groq Whisper.
-    function initMediaRecorderSTT() {
-      const SPEECH_THRESHOLD   = 0.01;   // RMS to start recording
-      const SILENCE_TIMEOUT_MS = 1400;   // ms of quiet → send clip
-      const MIN_SPEECH_MS      = 300;    // ignore blips shorter than this
+    // ── Groq Whisper STT — ScriptProcessorNode VAD → WAV → /api/stt ──
+    // ScriptProcessorNode gives us raw Float32 PCM on every browser/Android.
+    // We encode it as WAV (no codec negotiation) and POST to the server
+    // which forwards to Groq Whisper.
+    function initGroqSTT(source) {
+      const SPEECH_THRESHOLD   = 0.01;  // RMS threshold to start capturing
+      const SILENCE_TIMEOUT_MS = 1400;  // ms of quiet before sending clip
+      const MIN_SPEECH_MS      = 300;   // discard clips shorter than this
       const SAMPLE_RATE        = audioCtx.sampleRate;
 
       let isSpeaking   = false;
       let speechStart  = 0;
       let silenceTimer = null;
-      let pcmChunks    = [];            // Float32Array[] collected during speech
+      let pcmChunks    = [];
 
-      // ScriptProcessorNode: fires onaudioprocess with real PCM data on
-      // every browser including Android. Must connect to destination (even
-      // through a silent gain) or the browser skips processing entirely.
-      const processor  = audioCtx.createScriptProcessor(4096, 1, 1);
-      const silentGain = audioCtx.createGain();
-      silentGain.gain.value = 0;                        // no echo to speaker
-
-      audioCtx._micSource.connect(processor);
-      processor.connect(silentGain);
-      silentGain.connect(audioCtx.destination);
+      // ScriptProcessorNode MUST be connected to a real destination node or
+      // onaudioprocess never fires. createMediaStreamDestination() is a true
+      // sink — forces the graph to run without routing mic audio to speakers.
+      const processor = audioCtx.createScriptProcessor(4096, 1, 1);
+      const sink      = audioCtx.createMediaStreamDestination();
+      source.connect(processor);
+      processor.connect(sink);
 
       processor.onaudioprocess = (e) => {
         const input = e.inputBuffer.getChannelData(0);
 
-        // RMS for VAD
+        // RMS for VAD + waveform
         let sum = 0;
         for (let i = 0; i < input.length; i++) sum += input[i] * input[i];
         const rms = Math.sqrt(sum / input.length);
-
-        // Update smoothed volume so waveform bars still animate
         smoothedVolume = smoothedVolume * 0.7 + rms * 0.3;
 
-        // Ignore while robot is busy or media is playing
+        // Muted while robot is talking / thinking / playing media
         if (robotState === 'SPEAKING' || robotState === 'THINKING' || isMediaPlaying) {
           if (isSpeaking) {
             clearTimeout(silenceTimer); silenceTimer = null;
@@ -993,15 +894,15 @@
             robotState  = 'LISTENING';
             showTranscript('🎤 …');
           }
-          pcmChunks.push(new Float32Array(input)); // capture during speech
+          pcmChunks.push(new Float32Array(input));
         } else if (isSpeaking) {
-          pcmChunks.push(new Float32Array(input)); // capture tail during silence
+          pcmChunks.push(new Float32Array(input)); // include trailing silence in clip
           if (!silenceTimer) {
             silenceTimer = setTimeout(() => {
               silenceTimer = null;
               isSpeaking   = false;
-              const duration = Date.now() - speechStart;
-              if (duration >= MIN_SPEECH_MS && pcmChunks.length > 0) {
+              const dur = Date.now() - speechStart;
+              if (dur >= MIN_SPEECH_MS && pcmChunks.length > 0) {
                 sendToGroq(pcmChunks.splice(0));
               } else {
                 pcmChunks  = [];
@@ -1015,14 +916,11 @@
       async function sendToGroq(chunks) {
         if (robotState === 'SPEAKING' || robotState === 'THINKING' || isMediaPlaying) return;
         robotState = 'THINKING';
-
-        const wav = encodeWAV(chunks, SAMPLE_RATE);
-
         try {
           const res = await fetch('/api/stt', {
             method: 'POST',
             headers: { 'Content-Type': 'audio/wav' },
-            body: wav,
+            body: encodeWAV(chunks, SAMPLE_RATE),
           });
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
           const { text } = await res.json();
@@ -1038,7 +936,7 @@
         }
       }
 
-      console.log('[STT] ScriptProcessor VAD + Groq Whisper active, sampleRate:', SAMPLE_RATE);
+      console.log('[STT] Groq Whisper ready, sampleRate:', SAMPLE_RATE);
     }
 
     // Build a 16-bit mono WAV blob from an array of Float32Array PCM chunks.
@@ -1085,15 +983,6 @@
 
       resetInactivityTimer();
       processChat(text);
-    }
-
-    // Volume monitor for waveform animation only (no VAD needed)
-    function monitorVolume() {
-      setInterval(() => {
-        if (!analyser) return;
-        const rms = getRMS();
-        smoothedVolume = smoothedVolume * 0.75 + rms * 0.25;
-      }, 80);
     }
 
     function updateWaveformUI() {
