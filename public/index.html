@@ -824,8 +824,17 @@
       // Must resume — Android starts AudioContext suspended even inside a gesture.
       try { await audioCtx.resume(); } catch (_) {}
 
-      // Plain audio:true — no special constraints that can break Web Audio on Android.
-      micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // Disable browser audio processing so Android does NOT switch the audio
+      // session to "communication" mode. Communication mode routes ALL audio
+      // (including TTS playback) through the call/earpiece pipeline with noise
+      // reduction — which kills media-quality output.
+      micStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false
+        }
+      });
 
       const source = audioCtx.createMediaStreamSource(micStream);
       analyser = audioCtx.createAnalyser();
@@ -1074,19 +1083,29 @@
           const ttsEl = new Audio();
           ttsEl.preload = 'auto';
 
-          // Route through AudioContext so Android uses media volume (not call volume).
-          // Also enables the real RMS analyser for mouth sync animation.
+          // Play natively — do NOT route through audioCtx.destination.
+          // On Android, getUserMedia puts the audio session in communication
+          // mode; any audio routed through that AudioContext inherits call
+          // volume + noise reduction. Playing the <audio> element natively
+          // lets Android treat it as media volume (loud, full-band, no NR).
+          //
+          // For mouth-sync animation we tap the stream with captureStream()
+          // into a separate analysis-only AudioContext that has no destination
+          // — so it never reaches the speakers and doesn't affect volume.
           try {
-            const ttsSrc = audioCtx.createMediaElementSource(ttsEl);
-            const ttsGain = audioCtx.createGain();
-            ttsAnalyser = audioCtx.createAnalyser();
-            ttsAnalyser.fftSize = 256;
-            ttsAnalyser.smoothingTimeConstant = 0.4;
-            ttsSrc.connect(ttsAnalyser);
-            ttsAnalyser.connect(ttsGain);
-            ttsGain.connect(audioCtx.destination);
+            if (typeof ttsEl.captureStream === 'function') {
+              const capCtx = new AudioContext();
+              const capSrc = capCtx.createMediaStreamSource(ttsEl.captureStream());
+              ttsAnalyser = capCtx.createAnalyser();
+              ttsAnalyser.fftSize = 256;
+              ttsAnalyser.smoothingTimeConstant = 0.4;
+              capSrc.connect(ttsAnalyser);
+              // Intentionally NOT connected to capCtx.destination — analysis only.
+            } else {
+              ttsAnalyser = null; // falls back to sine-wave mouth animation
+            }
           } catch (routeErr) {
-            console.warn('AudioContext routing skipped:', routeErr.message);
+            console.warn('TTS analyser skipped:', routeErr.message);
             ttsAnalyser = null;
           }
 
