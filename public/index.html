@@ -631,6 +631,7 @@
       musicPlaying = true; // pause VAD while video audio is playing
       currentExpression = 'MUSIC';
       showTranscript('🎬 ' + (title || 'Playing video'));
+      srStop(); // stop listening while video is playing
     }
 
     function stopVideo() {
@@ -654,6 +655,7 @@
       if (modal) modal.classList.remove('open');
       musicPlaying = false;
       if (currentExpression === 'MUSIC') currentExpression = 'IDLE';
+      srStart(); // resume listening after video is closed
     }
 
     document.getElementById('video-stop').addEventListener('click', stopVideo);
