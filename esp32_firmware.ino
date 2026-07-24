@@ -535,9 +535,7 @@ void setup() {
   BLEService       *pSvc    = pServer->createService(SERVICE_UUID);
   BLECharacteristic *pChar  = pSvc->createCharacteristic(
     CHARACTERISTIC_UUID,
-    BLECharacteristic::PROPERTY_READ  |
-    BLECharacteristic::PROPERTY_WRITE |
-    BLECharacteristic::PROPERTY_WRITE_WITHOUT_RESPONSE  // allows both write modes from Web Bluetooth
+    BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_WRITE
   );
   pChar->setCallbacks(new CommandCallback());
   pSvc->start();
