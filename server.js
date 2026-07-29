@@ -418,6 +418,16 @@ CRITICAL INSTRUCTIONS:
    Example full VISION response:
    [[FACE:HAPPY,MOVE:LOOK_UP,LED:LED_CYAN]] Ooh, you want me to check you out? Hold still!
    VISION_NEEDED
+7. NAVIGATION RULE: When the user asks you to go to, move toward, approach, or find a physical
+   object or location (box, ball, chair, table, door, wall, corner, etc.) — use FACE:CAMERA,
+   MOVE:NONE, and add NAVIGATE_TO: <object_name> on its own line at the very end.
+   Say something excited like "Let me scan for the [object]!" before the tag.
+   Example full NAVIGATE response:
+   [[FACE:CAMERA,MOVE:NONE,LED:LED_CYAN]] Ooh, let me scan for the box and head there!
+   NAVIGATE_TO: box
+8. MOVEMENT RULE: When the user says move left or go left, use MOVE:LEFT. When they say move
+   right or go right, use MOVE:RIGHT. The robot will automatically turn to face that direction
+   first, then drive forward — so LEFT and RIGHT are directional, not just rotations.
 `;
 
 function stripThinking(text) {
@@ -910,6 +920,65 @@ Keep your response to 2-4 sentences. Do NOT include [[FACE:...]] tags or VISION_
   } catch (err) {
     console.error('Vision Error:', err.message);
     res.status(500).json({ error: 'Vision failed', detail: err.message });
+  }
+});
+
+// Navigate vision — accepts a base64 image + target object, returns LEFT/CENTER/RIGHT/NOTFOUND
+app.post('/api/vision/navigate', async (req, res) => {
+  try {
+    const { image, target } = req.body;
+    if (!image || !target) return res.status(400).json({ error: 'image and target required' });
+
+    const NAV_SYSTEM = `You are a navigation assistant for a small wheeled robot.
+Look at the image carefully and find the specified target object.
+Reply with EXACTLY ONE WORD — no punctuation, no explanation:
+- LEFT    → the target is clearly on the left side of the frame
+- RIGHT   → the target is clearly on the right side of the frame
+- CENTER  → the target is roughly in the center of the frame
+- NOTFOUND → the target is not visible in this image
+Only one word. Nothing else.`;
+
+    const userContent = [
+      { type: 'text', text: `Where is the "${target}" in this image? LEFT, CENTER, RIGHT, or NOTFOUND?` },
+      { type: 'image_url', image_url: { url: image } }
+    ];
+
+    let direction;
+    try {
+      const completion = await getGroq().chat.completions.create({
+        model: 'qwen/qwen3.6-27b',
+        messages: [
+          { role: 'system', content: NAV_SYSTEM },
+          { role: 'user', content: userContent }
+        ],
+        temperature: 0.1,
+        max_completion_tokens: 16,
+        reasoning_effort: 'none',
+      });
+      direction = stripThinking(completion.choices[0]?.message?.content || '').trim().toUpperCase();
+    } catch (e) {
+      const fallback = await getGroq().chat.completions.create({
+        model: 'meta-llama/llama-4-scout-17b-16e-instruct',
+        messages: [
+          { role: 'system', content: NAV_SYSTEM },
+          { role: 'user', content: userContent }
+        ],
+        temperature: 0.1,
+        max_completion_tokens: 16,
+      });
+      direction = stripThinking(fallback.choices[0]?.message?.content || '').trim().toUpperCase();
+    }
+
+    // Normalise — only accept the four valid tokens
+    const valid = ['LEFT', 'RIGHT', 'CENTER', 'NOTFOUND'];
+    const match = valid.find(v => direction.includes(v));
+    direction = match || 'NOTFOUND';
+
+    console.log(`[Navigate] target="${target}" → ${direction}`);
+    res.json({ direction });
+  } catch (err) {
+    console.error('Navigate Vision Error:', err.message);
+    res.status(500).json({ error: 'Navigate vision failed', detail: err.message });
   }
 });
 
