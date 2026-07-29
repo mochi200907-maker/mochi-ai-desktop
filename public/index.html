@@ -867,6 +867,141 @@
 
     let bleWriteQueue = Promise.resolve();
 
+    // ── Directional move: LEFT/RIGHT = turn first, then drive forward ──
+    // The ESP32 runs LEFT/RIGHT for 400 ms. We wait 550 ms before sending
+    // FORWARD so the turn finishes before the forward drive begins.
+    function sendDirectionalMove(cmd) {
+      cmd = String(cmd || '').trim().toUpperCase();
+      if (!cmd || cmd === 'NONE') return;
+      if (cmd === 'LEFT' || cmd === 'RIGHT') {
+        sendBLECommand(cmd);                            // turn phase
+        setTimeout(() => sendBLECommand('FORWARD'), 550); // drive forward in that direction
+      } else {
+        sendBLECommand(cmd);
+      }
+    }
+
+    // ── Environment camera capture (rear-facing) for navigation ──
+    async function captureEnvironmentPhoto() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: 'environment' }, width: { ideal: 640 }, height: { ideal: 480 } },
+          audio: false
+        });
+        const video = document.createElement('video');
+        video.srcObject = stream;
+        video.playsInline = true;
+        await video.play();
+        await new Promise(r => setTimeout(r, 600)); // camera warm-up
+
+        const cap = document.createElement('canvas');
+        cap.width = video.videoWidth || 640;
+        cap.height = video.videoHeight || 480;
+        cap.getContext('2d').drawImage(video, 0, 0);
+        stream.getTracks().forEach(t => t.stop());
+
+        return cap.toDataURL('image/jpeg', 0.85);
+      } catch (err) {
+        console.warn('[Nav] env camera failed, falling back to front camera:', err.message);
+        return capturePhotoSilent(); // fallback to front camera
+      }
+    }
+
+    // ── Navigate to target: scan surroundings, find target, drive toward it ──
+    async function navigateToTarget(target) {
+      const MAX_SCANS = 3; // try up to 3 rotational scans before giving up
+      let found = false;
+
+      for (let attempt = 0; attempt < MAX_SCANS; attempt++) {
+        showTranscript(`🔍 Scanning for "${target}"… (${attempt + 1}/${MAX_SCANS})`);
+        const photo = await captureEnvironmentPhoto();
+        if (!photo) {
+          showError('Camera unavailable for navigation');
+          return;
+        }
+
+        let direction = 'NOTFOUND';
+        try {
+          const navRes = await fetch('/api/vision/navigate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image: photo, target })
+          });
+          if (navRes.ok) {
+            const data = await navRes.json();
+            direction = data.direction || 'NOTFOUND';
+          }
+        } catch (err) {
+          console.warn('[Nav] navigate API failed:', err.message);
+        }
+
+        console.log(`[Nav] scan ${attempt + 1}: target="${target}" direction=${direction}`);
+
+        if (direction !== 'NOTFOUND') {
+          found = true;
+          showTranscript(`📍 Found "${target}" — ${direction}. Moving!`);
+          // Turn toward the target, then drive forward
+          sendDirectionalMove(direction === 'CENTER' ? 'FORWARD' : direction);
+          // Wait for the movement to complete before speaking
+          await new Promise(r => setTimeout(r, direction === 'CENTER' ? 900 : 1400));
+          // Let the AI announce arrival naturally
+          robotState = 'THINKING';
+          try {
+            const arrivalRes = await fetch('/api/chat/stream', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ history: [{ role: 'user', content: `You just successfully navigated and arrived at the ${target}. Announce that you made it there in an excited way!` }] })
+            });
+            if (arrivalRes.ok) {
+              const reader = arrivalRes.body.getReader();
+              const decoder = new TextDecoder();
+              let arrivalText = '';
+              while (true) {
+                const { value, done } = await reader.read();
+                if (done) break;
+                arrivalText += decoder.decode(value, { stream: true });
+              }
+              // Parse face/LED tag from arrival response
+              const aTag = arrivalText.match(/\[\[FACE:([A-Z]+),MOVE:[A-Z_]+(?:,LED:([A-Z_]+))?\]\]/i);
+              if (aTag) {
+                currentExpression = aTag[1].toUpperCase();
+                if (aTag[2] && aTag[2] !== 'NONE') sendBLECommand(aTag[2]);
+              } else {
+                currentExpression = 'HAPPY';
+                sendBLECommand('LED_GREEN');
+              }
+              const arrivalClean = arrivalText.replace(/\[\[.*?\]\]/g, '').replace(/VISION_NEEDED|NAVIGATE_TO:.*/gi, '').trim();
+              robotState = 'SPEAKING';
+              showTranscript('🏁 ' + arrivalClean.slice(0, 80) + (arrivalClean.length > 80 ? '…' : ''));
+              await playTTS(arrivalClean);
+            }
+          } catch (err) {
+            console.warn('[Nav] arrival announcement failed:', err.message);
+          }
+          robotState = 'IDLE';
+          currentExpression = 'IDLE';
+          sendBLECommand('LED_OFF');
+          break;
+        }
+
+        if (attempt < MAX_SCANS - 1) {
+          // Rotate left a bit to scan a new area, then pause before next scan
+          showTranscript(`🔄 Not found yet, rotating to scan...`);
+          sendBLECommand('LEFT');
+          await new Promise(r => setTimeout(r, 700)); // wait for rotation
+        }
+      }
+
+      if (!found) {
+        showTranscript(`❓ Can't find "${target}" nearby`);
+        robotState = 'SPEAKING';
+        currentExpression = 'SAD';
+        await playTTS(`I looked around but I can't find the ${target}. Can you point me toward it?`);
+        robotState = 'IDLE';
+        currentExpression = 'IDLE';
+      }
+    }
+
     function sendBLECommand(cmd) {
       // Trim and normalise BEFORE the NONE check so a padded "NONE\r" or
       // "NONE " doesn't slip past the guard and reach the ESP32.
@@ -1279,7 +1414,7 @@
               currentExpression = earlyTag[1].toUpperCase();
               const moveCmd = earlyTag[2].toUpperCase();
               const ledCmd  = (earlyTag[3] || 'NONE').toUpperCase();
-              sendBLECommand(moveCmd);
+              sendDirectionalMove(moveCmd);
               if (ledCmd !== 'NONE') sendBLECommand(ledCmd);
             }
           }
@@ -1294,7 +1429,7 @@
             currentExpression = tagMatch[1].toUpperCase();
             const moveCmd = tagMatch[2].toUpperCase();
             const ledCmd  = (tagMatch[3] || 'NONE').toUpperCase();
-            sendBLECommand(moveCmd);
+            sendDirectionalMove(moveCmd);
             if (ledCmd !== 'NONE') sendBLECommand(ledCmd);
           } else {
             currentExpression = 'HAPPY';
@@ -1352,6 +1487,13 @@
         if (/VISION_NEEDED/i.test(cleanText)) {
           visionNeeded = true;
           cleanText = cleanText.replace(/\n?VISION_NEEDED\s*/gi, '').trim();
+        }
+
+        let navigateTarget = null;
+        const navMatch = cleanText.match(/\n?NAVIGATE_TO:\s*(.+)/i);
+        if (navMatch) {
+          navigateTarget = navMatch[1].trim().toLowerCase();
+          cleanText = cleanText.replace(/\n?NAVIGATE_TO:\s*.+/gi, '').trim();
         }
 
         // ── Speak Mochi's first reply ──
@@ -1434,6 +1576,16 @@
             showError('Camera not available');
           }
 
+          robotState = 'IDLE';
+          currentExpression = 'IDLE';
+          mouthOpen = 0; mouthTarget = 0;
+        }
+
+        // ── Navigation: scan surroundings and drive toward target ──
+        if (navigateTarget) {
+          robotState = 'THINKING';
+          currentExpression = 'CAMERA';
+          await navigateToTarget(navigateTarget);
           robotState = 'IDLE';
           currentExpression = 'IDLE';
           mouthOpen = 0; mouthTarget = 0;
