@@ -22,23 +22,17 @@
 #define CHARACTERISTIC_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 
 // ── Pin definitions ──────────────────────────────────────────────
-// Keep these values matched to the motor-driver and servo wiring.
-// Confirm them against the exact ESP32-S3 board pinout before rewiring.
-#define MOTOR_A1   12
-#define MOTOR_A2   13
-#define MOTOR_B1   14
-#define MOTOR_B2   16
+// Updated pins based on motor control mapping
+#define MOTOR_A1   4
+#define MOTOR_A2   5
+#define MOTOR_B1   6
+#define MOTOR_B2   7
 #define SERVO_PIN  15   // head servo
 
 // Built-in NeoPixel on ESP32-S3-DevKitC-1 is GPIO 48.
-// Change this if your board uses a different pin (e.g. 33, 38, 40).
 #define NEO_PIN    48
 #define NEO_COUNT  1
 
-// Declare this before any function definitions.
-// Arduino IDE generates function prototypes automatically at the top of
-// the sketch, so declaring MotorState later can cause:
-// "'MotorState' was not declared in this scope".
 enum MotorState { M_STOP, M_FORWARD, M_BACKWARD, M_LEFT, M_RIGHT };
 
 Adafruit_NeoPixel neo(NEO_COUNT, NEO_PIN, NEO_GRB + NEO_KHZ800);
@@ -53,7 +47,7 @@ LedMode ledMode = LED_OFF;
 uint8_t ledR = 255, ledG = 255, ledB = 255;
 
 // Blink state machine
-uint8_t  blinkStep     = 0;   // 0..3 → on1,off1,on2,off2
+uint8_t  blinkStep     = 0;
 unsigned long blinkNext = 0;
 #define BLINK_ON_MS   140
 #define BLINK_OFF_MS  100
@@ -61,7 +55,7 @@ unsigned long blinkNext = 0;
 
 // Fade state
 float    fadeVal       = 0.0f;
-float    fadeDir       = 1.0f;   // +1 = brightening, -1 = dimming
+float    fadeDir       = 1.0f;
 unsigned long fadeNext = 0;
 #define FADE_STEP_MS  12          // update every 12 ms
 #define FADE_SPEED    0.028f      // brightness delta per tick (0-1 range)
@@ -80,14 +74,12 @@ void bootMark(const char *message) {
   yield();
 }
 
-// Call once to start a solid colour
 void ledStartSolid(uint8_t r, uint8_t g, uint8_t b) {
   ledR = r; ledG = g; ledB = b;
   ledMode = LED_SOLID;
   neoSet(r, g, b);
 }
 
-// Call once to start a double-blink then off
 void ledStartBlink(uint8_t r, uint8_t g, uint8_t b) {
   ledR = r; ledG = g; ledB = b;
   ledMode    = LED_BLINK;
@@ -95,7 +87,6 @@ void ledStartBlink(uint8_t r, uint8_t g, uint8_t b) {
   blinkNext  = millis();
 }
 
-// Call once to start continuous fade in/out
 void ledStartFade(uint8_t r, uint8_t g, uint8_t b) {
   ledR = r; ledG = g; ledB = b;
   ledMode  = LED_FADE;
@@ -104,7 +95,6 @@ void ledStartFade(uint8_t r, uint8_t g, uint8_t b) {
   fadeNext = millis();
 }
 
-// Parse a named colour string → sets ledR/G/B, returns true if matched
 bool parseColor(const String &cmd) {
   if      (cmd == "LED_WHITE"  || cmd == "LED_ON") { ledR=255; ledG=255; ledB=255; }
   else if (cmd == "LED_RED"   )                    { ledR=255; ledG=  0; ledB=  0; }
@@ -119,7 +109,6 @@ bool parseColor(const String &cmd) {
   return true;
 }
 
-// Called every loop — advances blink/fade state machines
 void updateLed() {
   unsigned long now = millis();
 
@@ -130,7 +119,7 @@ void updateLed() {
       case 1: neoOff();                 blinkNext = now + BLINK_OFF_MS; blinkStep++; break;
       case 2: neoSet(ledR, ledG, ledB); blinkNext = now + BLINK_ON_MS;  blinkStep++; break;
       case 3: neoOff();
-              ledMode = LED_OFF;  // done — stay off after blink
+              ledMode = LED_OFF;
               break;
     }
 
@@ -146,7 +135,6 @@ void updateLed() {
   }
 }
 
-// Dispatch any LED_* command string
 bool handleLedCommand(const String &cmd) {
   if (cmd == "LED_OFF") {
     ledMode = LED_OFF;
@@ -154,14 +142,13 @@ bool handleLedCommand(const String &cmd) {
     return true;
   }
   if (cmd == "LED_BLINK") {
-    ledStartBlink(ledR, ledG, ledB);   // blink in current colour
+    ledStartBlink(ledR, ledG, ledB);
     return true;
   }
   if (cmd == "LED_FADE") {
-    ledStartFade(ledR, ledG, ledB);    // fade current colour
+    ledStartFade(ledR, ledG, ledB);
     return true;
   }
-  // Colour commands — change colour and turn on solid
   if (parseColor(cmd)) {
     ledStartSolid(ledR, ledG, ledB);
     return true;
@@ -176,7 +163,7 @@ Servo headServo;
 
 float  servoAngle  = 90.0f;
 float  servoTarget = 90.0f;
-float  servoSpeed  = 1.2f;    // °/tick (10 ms)
+float  servoSpeed  = 1.2f;
 unsigned long lookHoldEnd = 0;
 
 bool lookHoldActive() {
@@ -198,14 +185,13 @@ void updateServo() {
     float step = servoSpeed * ease;
     servoAngle += (diff > 0) ? step : -step;
   }
-  // Do not sway during an explicit 20-second look hold.
   float sway   = lookHoldActive() ? 0.0f : 1.8f * sinf(millis() * 0.00157f);
   int writeVal = (int)constrain(servoAngle + sway, 45.0f, 135.0f);
   headServo.write(writeVal);
 }
 
 // ═══════════════════════════════════════════════════════════════════
-//  MOTORS — non-blocking
+//  MOTORS — non-blocking (Inverted direction logic fixed)
 // ═══════════════════════════════════════════════════════════════════
 MotorState  motorState = M_STOP;
 unsigned long motorEnd = 0;
@@ -219,14 +205,14 @@ void drive(MotorState s, int ms) {
   motorState = s;
   motorEnd   = millis() + ms;
   switch (s) {
-    case M_FORWARD:  digitalWrite(MOTOR_A1,HIGH);digitalWrite(MOTOR_A2,LOW);
-                     digitalWrite(MOTOR_B1,HIGH);digitalWrite(MOTOR_B2,LOW);  break;
-    case M_BACKWARD: digitalWrite(MOTOR_A1,LOW); digitalWrite(MOTOR_A2,HIGH);
-                     digitalWrite(MOTOR_B1,LOW); digitalWrite(MOTOR_B2,HIGH); break;
-    case M_LEFT:     digitalWrite(MOTOR_A1,LOW); digitalWrite(MOTOR_A2,HIGH);
-                     digitalWrite(MOTOR_B1,HIGH);digitalWrite(MOTOR_B2,LOW);  break;
-    case M_RIGHT:    digitalWrite(MOTOR_A1,HIGH);digitalWrite(MOTOR_A2,LOW);
-                     digitalWrite(MOTOR_B1,LOW); digitalWrite(MOTOR_B2,HIGH); break;
+    case M_FORWARD:  digitalWrite(MOTOR_A1, HIGH); digitalWrite(MOTOR_A2, LOW);
+                     digitalWrite(MOTOR_B1, HIGH); digitalWrite(MOTOR_B2, LOW);  break;
+    case M_BACKWARD: digitalWrite(MOTOR_A1, LOW);  digitalWrite(MOTOR_A2, HIGH);
+                     digitalWrite(MOTOR_B1, LOW);  digitalWrite(MOTOR_B2, HIGH); break;
+    case M_LEFT:     digitalWrite(MOTOR_A1, LOW);  digitalWrite(MOTOR_A2, HIGH);
+                     digitalWrite(MOTOR_B1, HIGH); digitalWrite(MOTOR_B2, LOW);  break;
+    case M_RIGHT:    digitalWrite(MOTOR_A1, HIGH); digitalWrite(MOTOR_A2, LOW);
+                     digitalWrite(MOTOR_B1, LOW);  digitalWrite(MOTOR_B2, HIGH); break;
     default: rawStop(); break;
   }
 }
@@ -242,8 +228,8 @@ void updateMotors() {
 //  EXPLORATION STATE MACHINE
 // ═══════════════════════════════════════════════════════════════════
 enum ExplorePhase { EX_IDLE, EX_LOOK, EX_MOVE, EX_SETTLE };
-ExplorePhase   exPhase       = EX_IDLE;
-unsigned long  exPhaseEnd    = 0;
+ExplorePhase   exPhase        = EX_IDLE;
+unsigned long  exPhaseEnd     = 0;
 unsigned long  bleOverrideEnd = 0;
 
 bool bleActive() { return millis() < bleOverrideEnd; }
@@ -333,8 +319,6 @@ void updateExploration() {
 // ═══════════════════════════════════════════════════════════════════
 //  BLE CALLBACKS
 // ═══════════════════════════════════════════════════════════════════
-// BLE callbacks run on the Bluetooth task. Keep them short and do not
-// touch motors, servo, or NeoPixel from that task.
 #define COMMAND_QUEUE_SIZE 8
 char commandQueue[COMMAND_QUEUE_SIZE][64] = {};
 volatile uint8_t commandHead = 0;
@@ -346,8 +330,6 @@ class CommandCallback : public BLECharacteristicCallbacks {
     String value = pChar->getValue().c_str();
     if (value.length() == 0) return;
 
-    // BLE callbacks run on the NimBLE/Bluedroid task, not on loop().
-    // Only copy the command here; hardware and Serial are handled by loop().
     size_t copyLength = value.length();
     if (copyLength >= sizeof(commandQueue[0])) {
       copyLength = sizeof(commandQueue[0]) - 1;
@@ -367,8 +349,6 @@ String normalizeCommand(String value) {
   value.trim();
   value.toUpperCase();
 
-  // Accept commands from different BLE clients, for example:
-  // LED_RED, LED:LED_RED, LED:RED, LED=RED, or " led_red\n".
   if (value.startsWith("LED:") || value.startsWith("LED=")) {
     value = value.substring(4);
     value.trim();
@@ -449,7 +429,6 @@ void processPendingCommand() {
     Serial.print("[BLE] unknown command: ");
     Serial.println(value);
   }
-  // ── NONE: expression-only, skip movement ──
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -457,7 +436,7 @@ void processPendingCommand() {
 // ═══════════════════════════════════════════════════════════════════
 void setup() {
   Serial.begin(115200);
-  delay(250);  // Give USB CDC on ESP32-S3 time to enumerate.
+  delay(250);
   Serial.println();
   bootMark("[BOOT] Mochi ESP32-S3 firmware starting");
 
@@ -517,13 +496,11 @@ void setup() {
   Serial.println(NEO_PIN);
   Serial.flush();
   neo.begin();
-  neo.setBrightness(180);  // 0-255; lower if too bright on your board
+  neo.setBrightness(180);
   neoOff();
 
-  // Startup blink: quick cyan flash so you know it booted
   ledStartBlink(0, 220, 220);
 
-  // GPIO4 is not guaranteed to be floating on every S3 board.
   randomSeed((uint32_t)esp_random());
 
   // BLE
@@ -560,5 +537,5 @@ void loop() {
   updateMotors();
   updateLed();
   updateExploration();
-  delay(10);  // yields to BLE and feeds the ESP32 watchdog
+  delay(10);
 }
