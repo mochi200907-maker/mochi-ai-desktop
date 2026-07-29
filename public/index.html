@@ -313,7 +313,7 @@
     window.visualViewport?.addEventListener('scroll', resize);
     resize();
 
-    let currentExpression = 'IDLE'; // IDLE, HAPPY, ANGRY, SAD, WINK, MUSIC, BURGER, JUICE, NEWS, CAMERA
+    let currentExpression = 'IDLE'; // IDLE, HAPPY, ANGRY, SAD, WINK, MUSIC, BURGER, JUICE, NEWS, CAMERA, SCANNING
     let robotState = 'IDLE';        // IDLE, LISTENING, THINKING, SPEAKING
 
     // ── CAMERA FEATURE ────────────────────────────────────────────
@@ -944,39 +944,19 @@
           sendDirectionalMove(direction === 'CENTER' ? 'FORWARD' : direction);
           // Wait for the movement to complete before speaking
           await new Promise(r => setTimeout(r, direction === 'CENTER' ? 900 : 1400));
-          // Let the AI announce arrival naturally
-          robotState = 'THINKING';
-          try {
-            const arrivalRes = await fetch('/api/chat/stream', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ history: [{ role: 'user', content: `You just successfully navigated and arrived at the ${target}. Announce that you made it there in an excited way!` }] })
-            });
-            if (arrivalRes.ok) {
-              const reader = arrivalRes.body.getReader();
-              const decoder = new TextDecoder();
-              let arrivalText = '';
-              while (true) {
-                const { value, done } = await reader.read();
-                if (done) break;
-                arrivalText += decoder.decode(value, { stream: true });
+          currentExpression = 'HAPPY';
+          sendBLECommand('LED_GREEN');
+          if (geminiWs?.readyState === WebSocket.OPEN) {
+            geminiWs.send(JSON.stringify({
+              clientContent: {
+                turns: [{ role: 'user', parts: [{ text: `You just successfully navigated and arrived at the ${target}. Announce that you made it there in an excited way!` }] }],
+                turnComplete: true
               }
-              // Parse face/LED tag from arrival response
-              const aTag = arrivalText.match(/\[\[FACE:([A-Z]+),MOVE:[A-Z_]+(?:,LED:([A-Z_]+))?\]\]/i);
-              if (aTag) {
-                currentExpression = aTag[1].toUpperCase();
-                if (aTag[2] && aTag[2] !== 'NONE') sendBLECommand(aTag[2]);
-              } else {
-                currentExpression = 'HAPPY';
-                sendBLECommand('LED_GREEN');
-              }
-              const arrivalClean = arrivalText.replace(/\[\[.*?\]\]/g, '').replace(/VISION_NEEDED|NAVIGATE_TO:.*/gi, '').trim();
-              robotState = 'SPEAKING';
-              showTranscript('🏁 ' + arrivalClean.slice(0, 80) + (arrivalClean.length > 80 ? '…' : ''));
-              await playTTS(arrivalClean);
-            }
-          } catch (err) {
-            console.warn('[Nav] arrival announcement failed:', err.message);
+            }));
+          } else {
+            robotState = 'SPEAKING';
+            showTranscript(`🏁 Made it to the ${target}!`);
+            await playTTS(`I made it to the ${target}! Woohoo!`);
           }
           robotState = 'IDLE';
           currentExpression = 'IDLE';
@@ -994,9 +974,18 @@
 
       if (!found) {
         showTranscript(`❓ Can't find "${target}" nearby`);
-        robotState = 'SPEAKING';
         currentExpression = 'SAD';
-        await playTTS(`I looked around but I can't find the ${target}. Can you point me toward it?`);
+        if (geminiWs?.readyState === WebSocket.OPEN) {
+          geminiWs.send(JSON.stringify({
+            clientContent: {
+              turns: [{ role: 'user', parts: [{ text: `You tried to find "${target}" but couldn't see it after scanning. Tell the user sadly that you couldn't find it and ask them to point you toward it.` }] }],
+              turnComplete: true
+            }
+          }));
+        } else {
+          robotState = 'SPEAKING';
+          await playTTS(`I looked around but I can't find the ${target}. Can you point me toward it?`);
+        }
         robotState = 'IDLE';
         currentExpression = 'IDLE';
       }
@@ -1061,7 +1050,7 @@
       analyser.smoothingTimeConstant = 0.5;
       source.connect(analyser);
 
-      initGroqSTT(source);
+      initGeminiLive(source);
     }
 
     function getRMS() {
@@ -1077,110 +1066,263 @@
       inactivityTimer = setTimeout(() => { robotState = 'IDLE'; }, INACTIVITY_MS);
     }
 
-    // ── Groq Whisper STT — ScriptProcessorNode VAD → WAV → /api/stt ──
-    // ScriptProcessorNode gives us raw Float32 PCM on every browser/Android.
-    // We encode it as WAV (no codec negotiation) and POST to the server
-    // which forwards to Groq Whisper.
-    function initGroqSTT(source) {
-      const SPEECH_THRESHOLD   = 0.025; // RMS threshold to start capturing (raised from 0.01 — reduces false triggers from ambient noise)
-      const SILENCE_TIMEOUT_MS = 800;   // ms of quiet before sending clip
-      const MIN_SPEECH_MS      = 500;   // discard clips shorter than this (raised from 300ms)
-      const SAMPLE_RATE        = audioCtx.sampleRate;
-      const TARGET_RATE        = 16000; // Whisper only needs 16kHz — downsample to cut WAV size
+    // ── Gemini Live Voice Pipeline ─────────────────────────────────
+    // Single real-time WebSocket: browser streams raw 16kHz PCM → server proxies
+    // to Gemini Live → Gemini returns 24kHz PCM audio + text → play + parse tags.
+    let geminiWs        = null;
+    let geminiNextStart = 0;    // scheduled end time of last audio chunk
+    let geminiAccText   = '';   // accumulated text this turn
+    let geminiTagFired  = false;// whether [[FACE:...]] tag was applied
+    let lastUserText    = '';   // last user speech transcript (for vision)
+    let geminiMuted     = false;// true while Gemini audio is playing (prevents echo)
 
-      let isSpeaking   = false;
-      let speechStart  = 0;
-      let silenceTimer = null;
-      let pcmChunks    = [];
+    function connectGeminiLive() {
+      const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+      geminiWs = new WebSocket(`${proto}://${location.host}/ws/gemini`);
 
-      // Grace period: ignore mic input for 1.5 s after startup so the
-      // initial mic-open noise / breathing doesn't trigger a capture.
-      let vadReady = false;
-      setTimeout(() => { vadReady = true; }, 1500);
+      geminiWs.onopen = () => console.log('[GeminiLive] connected');
 
-      // ScriptProcessorNode MUST be connected to a real destination node or
-      // onaudioprocess never fires. createMediaStreamDestination() is a true
-      // sink — forces the graph to run without routing mic audio to speakers.
-      const processor = audioCtx.createScriptProcessor(4096, 1, 1);
-      const sink      = audioCtx.createMediaStreamDestination();
-      source.connect(processor);
-      processor.connect(sink);
+      geminiWs.onmessage = ({ data }) => {
+        let msg;
+        try { msg = JSON.parse(data); } catch { return; }
 
-      processor.onaudioprocess = (e) => {
-        const input = e.inputBuffer.getChannelData(0);
+        if (msg.setupComplete !== undefined) {
+          showTranscript('🔴 Gemini Live ready — speak to Mochi!');
+          return;
+        }
+        if (msg.error) { showError('Gemini: ' + msg.error); robotState = 'IDLE'; return; }
 
-        // RMS for VAD + waveform
-        let sum = 0;
-        for (let i = 0; i < input.length; i++) sum += input[i] * input[i];
-        const rms = Math.sqrt(sum / input.length);
-        smoothedVolume = smoothedVolume * 0.7 + rms * 0.3;
+        // ── Robot action from run_scenario tool call (server-resolved) ──
+        if (msg.robotAction) {
+          const { face, move, led } = msg.robotAction;
+          if (face) {
+            currentExpression = face;
+            if (face === 'CAMERA') triggerCameraCapture();
+          }
+          sendDirectionalMove(move || 'NONE');
+          if (led && led !== 'NONE') sendBLECommand(led);
+          return;
+        }
 
-        // Muted during startup grace period, while robot is talking / thinking / playing media
-        if (!vadReady || robotState === 'SPEAKING' || robotState === 'THINKING' || isMediaPlaying) {
-          if (isSpeaking) {
-            clearTimeout(silenceTimer); silenceTimer = null;
-            isSpeaking = false; pcmChunks = [];
+        // ── Tool cancellation: user interrupted — stop action immediately ──
+        if (msg.toolCancelled) {
+          geminiNextStart = 0; geminiAccText = ''; geminiTagFired = false; geminiMuted = false;
+          robotState = 'LISTENING'; currentExpression = 'IDLE';
+          return;
+        }
+
+        // ── Media loading indicator (server fetching the URL) ──
+        if (msg.mediaAction) {
+          const labels = { music: '🎵 Searching music…', video: '🎬 Searching video…', tiktok: '📱 Searching TikTok…', shoti: '🎀 Fetching shoti…' };
+          showTranscript(labels[msg.mediaAction.type] || '🔍 Loading…');
+          return;
+        }
+
+        // ── Media URL ready — play it ──
+        if (msg.mediaReady) {
+          const { type, url, title, provider } = msg.mediaReady;
+          if (!url) { showError('Media not found'); return; }
+          if (type === 'music') {
+            playMusicUrl(title || 'Music', url);
+          } else {
+            playVideoUrl(title || 'Video', url, provider || type);
           }
           return;
         }
 
-        if (rms > SPEECH_THRESHOLD) {
-          clearTimeout(silenceTimer); silenceTimer = null;
-          if (!isSpeaking) {
-            isSpeaking  = true;
-            speechStart = Date.now();
-            pcmChunks   = [];
-            robotState  = 'LISTENING';
-            showTranscript('🎤 …');
+        const sc = msg.serverContent;
+        if (!sc) return;
+
+        // Gemini's STT transcript of the user's speech
+        if (sc.inputTranscription?.text) {
+          const t = sc.inputTranscription.text.trim();
+          if (t) { lastUserText = t; showTranscript('🎤 ' + t); robotState = 'THINKING'; }
+        }
+
+        if (sc.modelTurn?.parts) {
+          for (const part of sc.modelTurn.parts) {
+            // Audio chunk — schedule for seamless gapless playback at 24kHz
+            if (part.inlineData?.mimeType?.startsWith('audio/pcm')) {
+              robotState = 'SPEAKING';
+              geminiMuted = true;
+              _playGeminiChunk(part.inlineData.data);
+            }
+            // Text transcription of model audio (if provided by the model)
+            if (typeof part.text === 'string') {
+              geminiAccText += part.text;
+            }
           }
-          pcmChunks.push(new Float32Array(input));
-        } else if (isSpeaking) {
-          pcmChunks.push(new Float32Array(input)); // include trailing silence in clip
-          if (!silenceTimer) {
-            silenceTimer = setTimeout(() => {
-              silenceTimer = null;
-              isSpeaking   = false;
-              const dur = Date.now() - speechStart;
-              if (dur >= MIN_SPEECH_MS && pcmChunks.length > 0) {
-                sendToGroq(pcmChunks.splice(0));
-              } else {
-                pcmChunks  = [];
-                robotState = 'IDLE';
-              }
-            }, SILENCE_TIMEOUT_MS);
-          }
+        }
+
+        // User started speaking mid-response → interrupt immediately
+        if (sc.interrupted) {
+          geminiNextStart = 0; geminiAccText = ''; geminiTagFired = false; geminiMuted = false;
+          robotState = 'LISTENING'; currentExpression = 'IDLE';
+        }
+
+        // Turn complete — reset state (media already handled via tool calls above)
+        if (sc.turnComplete) {
+          geminiAccText = ''; geminiTagFired = false;
+          const delay = Math.max(0, (geminiNextStart - audioCtx.currentTime) * 1000 + 300);
+          setTimeout(() => {
+            geminiMuted = false;
+            if (robotState === 'SPEAKING') { robotState = 'IDLE'; currentExpression = 'IDLE'; mouthOpen = 0; mouthTarget = 0; }
+          }, delay);
         }
       };
 
-      async function sendToGroq(chunks) {
-        if (robotState === 'SPEAKING' || robotState === 'THINKING' || isMediaPlaying) return;
-        robotState = 'THINKING';
-        try {
-          // Downsample to 16kHz — Whisper doesn't need 48kHz, cuts upload size 3x
-          const wav = encodeWAV(downsample(chunks, SAMPLE_RATE, TARGET_RATE), TARGET_RATE);
-          const res = await fetch('/api/stt', {
-            method: 'POST',
-            headers: { 'Content-Type': 'audio/wav' },
-            body: wav,
-          });
-          if (!res.ok) throw new Error(`HTTP ${res.status}`);
-          const { text } = await res.json();
-          if (text?.trim()) {
-            showTranscript(text.trim());
-            // Don't go through handleSpeechResult — it guards against THINKING state
-            // and robotState is still THINKING here. Call processChat directly.
-            resetInactivityTimer();
-            processChat(text.trim());
-          } else {
-            robotState = 'IDLE';
+      geminiWs.onclose = ({ code, reason }) => {
+        console.log('[GeminiLive] closed', code, reason?.toString?.() ?? '');
+        geminiMuted = false; robotState = 'IDLE'; geminiWs = null;
+        setTimeout(connectGeminiLive, 3000); // auto-reconnect
+      };
+      geminiWs.onerror = (e) => console.error('[GeminiLive] error', e);
+    }
+
+    function _playGeminiChunk(b64) {
+      const raw = atob(b64);
+      const i16 = new Int16Array(raw.length / 2);
+      for (let i = 0; i < i16.length; i++)
+        i16[i] = (raw.charCodeAt(i * 2) & 0xff) | ((raw.charCodeAt(i * 2 + 1) & 0xff) << 8);
+      const f32 = new Float32Array(i16.length);
+      for (let i = 0; i < i16.length; i++) f32[i] = i16[i] / 32768.0;
+
+      const buf = audioCtx.createBuffer(1, f32.length, 24000);
+      buf.copyToChannel(f32, 0);
+      const src = audioCtx.createBufferSource();
+      src.buffer = buf;
+      src.connect(audioCtx.destination);
+
+      const now   = audioCtx.currentTime;
+      const start = Math.max(now + 0.01, geminiNextStart);
+      src.start(start);
+      geminiNextStart = start + buf.duration;
+
+      src.onended = () => {
+        if (audioCtx.currentTime >= geminiNextStart - 0.08) {
+          geminiMuted = false;
+          if (robotState === 'SPEAKING') {
+            robotState = 'IDLE'; currentExpression = 'IDLE';
+            mouthOpen = 0; mouthTarget = 0;
           }
-        } catch (err) {
-          console.error('[STT]', err);
-          robotState = 'IDLE';
         }
+      };
+    }
+
+    async function _handleAfterTurn(text) {
+      let clean = text.replace(/\[\[.*?\]\]/g, '').trim();
+
+      // Navigation — silent rear-camera scan, no selfie animation
+      const nav = clean.match(/\n?NAVIGATE_TO:\s*(.+)/i);
+      if (nav) {
+        const target = nav[1].trim().toLowerCase();
+        robotState = 'THINKING'; currentExpression = 'SCANNING';
+        await navigateToTarget(target);
+        robotState = 'IDLE'; currentExpression = 'IDLE';
+        mouthOpen = 0; mouthTarget = 0;
+        return;
       }
 
-      console.log('[STT] Groq Whisper ready, sampleRate:', SAMPLE_RATE);
+      // Vision — capture photo silently, feed result back to Gemini to speak
+      if (/VISION_NEEDED/i.test(clean)) {
+        robotState = 'THINKING'; currentExpression = 'CAMERA';
+        showTranscript('👁 Looking at you...');
+        const photo = await capturePhotoSilent();
+        if (photo) {
+          try {
+            const vr = await fetch('/api/vision', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ image: photo, question: lastUserText || 'What do you see?' })
+            });
+            if (vr.ok) {
+              const { response: vt } = await vr.json();
+              const desc = vt.replace(/\[\[.*?\]\]/g, '').replace(/VISION_NEEDED/gi, '').trim();
+              if (desc && geminiWs?.readyState === WebSocket.OPEN) {
+                geminiWs.send(JSON.stringify({
+                  clientContent: {
+                    turns: [{ role: 'user', parts: [{ text: 'Vision result: ' + desc }] }],
+                    turnComplete: true
+                  }
+                }));
+                return; // Gemini will speak the result
+              }
+            }
+          } catch (e) { console.warn('[Vision]', e); }
+        }
+        robotState = 'IDLE'; currentExpression = 'IDLE'; mouthOpen = 0; mouthTarget = 0;
+        return;
+      }
+
+      // Media queries
+      let mq = null, vq = null, tq = null, sq = false;
+      const mm = clean.match(/\n?MUSIC_QUERY:\s*(.+)/i);   if (mm) { mq = mm[1].trim(); clean = clean.replace(/\n?MUSIC_QUERY:.+/i, '').trim(); }
+      const vm = clean.match(/\n?VIDEO_QUERY:\s*(.+)/i);   if (vm) { vq = vm[1].trim(); clean = clean.replace(/\n?VIDEO_QUERY:.+/i, '').trim(); }
+      const tk = clean.match(/\n?TIKTOK_QUERY:\s*(.+)/i);  if (tk) { tq = tk[1].trim(); clean = clean.replace(/\n?TIKTOK_QUERY:.+/i, '').trim(); }
+      if (/SHOTI_QUERY/i.test(clean)) { sq = true; clean = clean.replace(/\n?SHOTI_QUERY:.*/gi, '').trim(); }
+
+      // Keyword fallbacks
+      const lu = lastUserText.toLowerCase();
+      if (!sq && !tq && /\b(shoti|shot[io]|short video|girl video)\b/.test(lu)) { sq = true; vq = null; mq = null; }
+      if (!tq && !sq && /\b(tiktok|tik tok|reels?)\b/.test(lu)) { tq = vq || mq || lastUserText; vq = null; mq = null; }
+      if (sq) { tq = null; vq = null; mq = null; }
+      if (tq) { vq = null; mq = null; }
+
+      if (mq) {
+        showTranscript('🎵 ' + mq);
+        const info = await fetch('/api/music/url?q=' + encodeURIComponent(mq)).then(r => r.ok ? r.json() : null).catch(() => null);
+        if (info?.url) playMusicUrl(info.title || mq, info.url); else showError('Song not found');
+      } else if (vq) {
+        showTranscript('🎬 ' + vq);
+        const info = await fetch('/api/video/url?q=' + encodeURIComponent(vq)).then(r => r.ok ? r.json() : null).catch(() => null);
+        if (info?.url) playVideoUrl(info.title || vq, info.url, info.provider || 'youtube'); else showError('Video not found');
+      } else if (tq) {
+        showTranscript('📱 ' + tq);
+        const info = await fetch('/api/tiktok/url?q=' + encodeURIComponent(tq)).then(r => r.ok ? r.json() : null).catch(() => null);
+        if (info?.url) playVideoUrl(info.title || tq, info.url, 'tiktok'); else showError('TikTok not found');
+      } else if (sq) {
+        showTranscript('🎀 Fetching shoti...');
+        const info = await fetch('/api/shoti/url').then(r => r.ok ? r.json() : null).catch(() => null);
+        if (info?.url) playVideoUrl(info.title || 'Shoti', info.url, 'shoti'); else showError('Shoti not found');
+      } else {
+        robotState = 'IDLE'; currentExpression = 'IDLE'; mouthOpen = 0; mouthTarget = 0;
+      }
+    }
+
+    function initGeminiLive(source) {
+      const SR = audioCtx.sampleRate, TR = 16000;
+      const proc = audioCtx.createScriptProcessor(4096, 1, 1);
+      const sink = audioCtx.createMediaStreamDestination();
+      source.connect(proc);
+      proc.connect(sink);
+
+      let vadReady = false;
+      setTimeout(() => { vadReady = true; }, 1500);
+
+      proc.onaudioprocess = (e) => {
+        const input = e.inputBuffer.getChannelData(0);
+
+        // RMS for waveform visualization (same as before)
+        let sum = 0;
+        for (let i = 0; i < input.length; i++) sum += input[i] * input[i];
+        smoothedVolume = smoothedVolume * 0.7 + Math.sqrt(sum / input.length) * 0.3;
+
+        // Don't stream during startup, while Gemini is speaking, or media is playing
+        if (!vadReady || geminiMuted || isMediaPlaying || !geminiWs || geminiWs.readyState !== WebSocket.OPEN) return;
+
+        // Downsample to 16kHz for Gemini Live input
+        const ratio = SR / TR, outLen = Math.floor(input.length / ratio);
+        const pcm = new Int16Array(outLen);
+        for (let i = 0; i < outLen; i++) {
+          const pos = i * ratio, idx = Math.floor(pos), frac = pos - idx;
+          const s = Math.max(-1, Math.min(1, (input[idx] || 0) + frac * ((input[idx + 1] || 0) - (input[idx] || 0))));
+          pcm[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+        }
+        geminiWs.send(pcm.buffer);
+        if (robotState === 'IDLE') robotState = 'LISTENING';
+      };
+
+      connectGeminiLive();
+      console.log('[GeminiLive] audio pipeline ready, sampleRate:', SR);
     }
 
     // Downsample Float32Array chunks from srcRate → dstRate using linear interpolation.
@@ -1377,295 +1519,9 @@
       }
     }
 
-    async function processChat(text) {
-      robotState = 'THINKING';
-      if (!text?.trim()) { robotState = 'IDLE'; return; }
-
-      showTranscript('🎤 ' + text);
-
-      try {
-        // ── Streaming chat — fires BLE command the instant [[...]] tag closes ──
-        const chatRes = await fetch('/api/chat/stream', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ history: [{ role: 'user', content: text }] })
-        });
-        if (!chatRes.ok) {
-          showError('Chat failed: ' + chatRes.status);
-          robotState = 'IDLE';
-          return;
-        }
-
-        const reader = chatRes.body.getReader();
-        const decoder = new TextDecoder();
-        let response = '';
-        let bleDispatched = false;
-
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          response += decoder.decode(value, { stream: true });
-
-          // Fire BLE the moment the [[...]] tag is complete in the stream
-          if (!bleDispatched) {
-            const earlyTag = response.match(/\[\[FACE:([A-Z]+),MOVE:([A-Z_]+)(?:,LED:([A-Z_]+))?\]\]/i);
-            if (earlyTag) {
-              bleDispatched = true;
-              currentExpression = earlyTag[1].toUpperCase();
-              const moveCmd = earlyTag[2].toUpperCase();
-              const ledCmd  = (earlyTag[3] || 'NONE').toUpperCase();
-              sendDirectionalMove(moveCmd);
-              if (ledCmd !== 'NONE') sendBLECommand(ledCmd);
-            }
-          }
-        }
-
-        let cleaned = response.trim();
-
-        // ── Parse face+move+led tag (fallback if somehow not fired during stream) ──
-        if (!bleDispatched) {
-          const tagMatch = cleaned.match(/\[\[FACE:([A-Z]+),MOVE:([A-Z_]+)(?:,LED:([A-Z_]+))?\]\]/i);
-          if (tagMatch) {
-            currentExpression = tagMatch[1].toUpperCase();
-            const moveCmd = tagMatch[2].toUpperCase();
-            const ledCmd  = (tagMatch[3] || 'NONE').toUpperCase();
-            sendDirectionalMove(moveCmd);
-            if (ledCmd !== 'NONE') sendBLECommand(ledCmd);
-          } else {
-            currentExpression = 'HAPPY';
-          }
-        }
-
-        // Trigger camera selfie sequence if Mochi chose CAMERA expression
-        if (currentExpression === 'CAMERA') triggerCameraCapture();
-
-        // ── Strip face tag, extract media query and VISION_NEEDED ──
-        let cleanText = cleaned.replace(/\[\[.*?\]\]/g, '').trim();
-
-        let musicQuery = null;
-        let videoQuery = null;
-        let tiktokQuery = null;
-        let shotiQuery = false;
-        const musicMatch = cleanText.match(/\nMUSIC_QUERY:\s*(.+)/i) || cleanText.match(/MUSIC_QUERY:\s*(.+)/i);
-        if (musicMatch) {
-          musicQuery = musicMatch[1].trim();
-          cleanText = cleanText.replace(/\n?MUSIC_QUERY:.+/i, '').trim();
-        }
-        const videoMatch = cleanText.match(/\nVIDEO_QUERY:\s*(.+)/i) || cleanText.match(/VIDEO_QUERY:\s*(.+)/i);
-        if (videoMatch) {
-          videoQuery = videoMatch[1].trim();
-          cleanText = cleanText.replace(/\n?VIDEO_QUERY:.+/i, '').trim();
-        }
-        const tiktokMatch = cleanText.match(/\nTIKTOK_QUERY:\s*(.+)/i) || cleanText.match(/TIKTOK_QUERY:\s*(.+)/i);
-        if (tiktokMatch) {
-          tiktokQuery = tiktokMatch[1].trim();
-          cleanText = cleanText.replace(/\n?TIKTOK_QUERY:.+/i, '').trim();
-        }
-        if (/SHOTI_QUERY/i.test(cleanText)) {
-          shotiQuery = true;
-          cleanText = cleanText.replace(/\n?SHOTI_QUERY:.*/gi, '').trim();
-        }
-        const asksForShoti = /\b(shot[io]|shoti|short video|girl video)\b/i.test(text);
-        const asksForTikTok = /\b(tiktok|tik tok|reels?)\b/i.test(text);
-        if (asksForShoti && !shotiQuery && !tiktokQuery) {
-          shotiQuery = true;
-          videoQuery = null;
-          musicQuery = null;
-        }
-        if (asksForTikTok && !tiktokQuery && !shotiQuery) {
-          tiktokQuery = videoQuery || musicQuery || text;
-          videoQuery = null;
-          musicQuery = null;
-        }
-        if (shotiQuery) { tiktokQuery = null; videoQuery = null; musicQuery = null; }
-        if (tiktokQuery) {
-          videoQuery = null;
-          musicQuery = null;
-        }
-
-        let visionNeeded = false;
-        if (/VISION_NEEDED/i.test(cleanText)) {
-          visionNeeded = true;
-          cleanText = cleanText.replace(/\n?VISION_NEEDED\s*/gi, '').trim();
-        }
-
-        let navigateTarget = null;
-        const navMatch = cleanText.match(/\n?NAVIGATE_TO:\s*(.+)/i);
-        if (navMatch) {
-          navigateTarget = navMatch[1].trim().toLowerCase();
-          cleanText = cleanText.replace(/\n?NAVIGATE_TO:\s*.+/gi, '').trim();
-        }
-
-        // ── Speak Mochi's first reply ──
-        robotState = 'SPEAKING';
-
-        // Pre-resolve media in parallel while TTS plays.
-        // /api/music/url returns the DIRECT CDN URL so the browser streams
-        // from YouTube's CDN — not through the Replit proxy — which prevents
-        // the proxy from killing the connection on long songs (>2 min).
-        let musicUrlPromise = null;
-        if (musicQuery) {
-          showTranscript('🎵 Searching: ' + musicQuery);
-          musicUrlPromise = fetch('/api/music/url?q=' + encodeURIComponent(musicQuery))
-            .then(r => r.ok ? r.json() : Promise.reject('not found'))
-            .catch(() => null);
-        }
-        let videoUrlPromise = null;
-        if (videoQuery) {
-          showTranscript('🎬 Finding: ' + videoQuery);
-          videoUrlPromise = fetch('/api/video/url?q=' + encodeURIComponent(videoQuery))
-            .then(r => r.ok ? r.json() : Promise.reject('not found'))
-            .catch(() => null);
-        }
-        let tiktokUrlPromise = null;
-        if (tiktokQuery) {
-          showTranscript('📱 Finding TikTok: ' + tiktokQuery);
-          tiktokUrlPromise = fetch('/api/tiktok/url?q=' + encodeURIComponent(tiktokQuery))
-            .then(r => r.ok ? r.json() : Promise.reject('not found'))
-            .catch(() => null);
-        }
-        let shotiUrlPromise = null;
-        if (shotiQuery) {
-          showTranscript('🎀 Fetching shoti...');
-          shotiUrlPromise = fetch('/api/shoti/url')
-            .then(r => r.ok ? r.json() : Promise.reject('not found'))
-            .catch(() => null);
-        }
-
-        await playTTS(cleanText);
-
-        robotState = 'IDLE';
-        currentExpression = 'IDLE';
-        mouthOpen = 0; mouthTarget = 0;
-
-        // ── Vision: capture photo and ask the vision LLM ──
-        if (visionNeeded) {
-          robotState = 'THINKING';
-          currentExpression = 'CAMERA';
-          showTranscript('👁 Looking at you...');
-
-          const photoData = await capturePhotoSilent();
-
-          if (photoData) {
-            try {
-              const visionRes = await fetch('/api/vision', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ image: photoData, question: text })
-              });
-              if (visionRes.ok) {
-                const { response: visionReply } = await visionRes.json();
-                const visionText = visionReply
-                  .replace(/\[\[.*?\]\]/g, '')
-                  .replace(/VISION_NEEDED/gi, '')
-                  .trim();
-                if (visionText) {
-                  robotState = 'SPEAKING';
-                  currentExpression = 'HAPPY';
-                  showTranscript('👁 ' + visionText.slice(0, 80) + (visionText.length > 80 ? '…' : ''));
-                  await playTTS(visionText);
-                }
-              } else {
-                showError('Vision failed: ' + visionRes.status);
-              }
-            } catch (vErr) {
-              console.warn('Vision pipeline error:', vErr.message);
-              showError('Could not analyze photo');
-            }
-          } else {
-            showError('Camera not available');
-          }
-
-          robotState = 'IDLE';
-          currentExpression = 'IDLE';
-          mouthOpen = 0; mouthTarget = 0;
-        }
-
-        // ── Navigation: scan surroundings and drive toward target ──
-        if (navigateTarget) {
-          robotState = 'THINKING';
-          currentExpression = 'CAMERA';
-          await navigateToTarget(navigateTarget);
-          robotState = 'IDLE';
-          currentExpression = 'IDLE';
-          mouthOpen = 0; mouthTarget = 0;
-        }
-
-        // ── Audio-only music: play direct CDN stream ──
-        if (musicQuery && musicUrlPromise) {
-          try {
-            const info = await musicUrlPromise;
-            if (info?.url) {
-              currentExpression = 'MUSIC';
-              // Play the direct CDN URL — browser streams straight from YouTube,
-              // bypassing Replit's proxy so long songs never get cut off.
-              playMusicUrl(info.title || musicQuery, info.url);
-            } else {
-              showError('Could not find that song');
-              currentExpression = 'IDLE';
-            }
-          } catch (err) {
-            console.warn('Music failed:', err.message);
-            showError('Could not find that song');
-            currentExpression = 'IDLE';
-          }
-        }
-
-        // ── Video: play the original YouTube watch URL in the video modal ──
-        if (videoQuery && videoUrlPromise) {
-          try {
-            const info = await videoUrlPromise;
-            if (info?.url) {
-              playVideoUrl(info.title || videoQuery, info.url, info.provider || 'youtube');
-            } else {
-              showError('Could not find that video');
-              currentExpression = 'IDLE';
-            }
-          } catch (err) {
-            console.warn('Video failed:', err.message);
-            showError('Could not find that video');
-            currentExpression = 'IDLE';
-          }
-        }
-        if (tiktokQuery && tiktokUrlPromise) {
-          try {
-            const info = await tiktokUrlPromise;
-            if (info?.url) {
-              playVideoUrl(info.title || tiktokQuery, info.url, 'tiktok');
-            } else {
-              showError('Could not find that TikTok video');
-              currentExpression = 'IDLE';
-            }
-          } catch (err) {
-            console.warn('TikTok failed:', err.message);
-            showError('Could not find that TikTok video');
-            currentExpression = 'IDLE';
-          }
-        }
-
-        if (shotiQuery && shotiUrlPromise) {
-          try {
-            const info = await shotiUrlPromise;
-            if (info?.url) {
-              playVideoUrl(info.title || 'Shoti', info.url, 'shoti');
-            } else {
-              showError('Could not get shoti video');
-              currentExpression = 'IDLE';
-            }
-          } catch (err) {
-            console.warn('Shoti failed:', err.message);
-            showError('Could not get shoti video');
-            currentExpression = 'IDLE';
-          }
-        }
-
-      } catch (err) {
-        console.error('Pipeline failure:', err);
-        showError(err.message || 'Pipeline error');
-        robotState = 'IDLE';
-        mouthOpen = 0; mouthTarget = 0;
-      }
-    }
+    // processChat — Gemini Live handles voice in real-time via _handleAfterTurn.
+    // This stub is kept so any legacy call sites don't throw.
+    function processChat() {}
 
     // ── MOUTH ANIMATION ──────────────────────────────────────────────
     let mouthOpen = 0;
