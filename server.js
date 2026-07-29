@@ -78,7 +78,7 @@ app.get('/', (_req, res) => {
     <div class="stat"><span class="label">Status</span><span class="value">Running</span></div>
     <div class="stat"><span class="label">Uptime</span><span class="value">${uptimeStr}</span></div>
     <div class="stat"><span class="label">TTS</span><span class="value">Edge Neural ✓</span></div>
-    <div class="stat"><span class="label">STT / LLM</span><span class="value">Groq API ✓</span></div>
+    <div class="stat"><span class="label">Voice / LLM</span><span class="value">Gemini Live ✓</span></div>
     <div class="stat"><span class="label">WebSocket</span><span class="value">/ws ✓</span></div>
     <a href="/app" class="btn">Open Robot Web UI →</a>
   </div>
@@ -366,7 +366,7 @@ CRITICAL INSTRUCTIONS:
 2. Maintain a cute, witty, and warm robotic personality.
 3. You MUST ALWAYS start EVERY response with a face+move+led command in this EXACT format (no exceptions):
    [[FACE:<expression>,MOVE:<action>,LED:<led>]]
-   - Expression options: IDLE, HAPPY, ANGRY, SAD, WINK, BURGER, JUICE, MUSIC, NEWS, CAMERA
+   - Expression options: IDLE, HAPPY, ANGRY, SAD, WINK, BURGER, JUICE, MUSIC, NEWS, CAMERA, SCANNING
    - Move options: NONE, FORWARD, BACKWARD, LEFT, RIGHT, LOOK_UP, LOOK_DOWN, LOOK_CENTER
    - LED options: NONE, LED_ON, LED_OFF, LED_WHITE, LED_RED, LED_GREEN, LED_BLUE, LED_CYAN,
                   LED_PURPLE, LED_ORANGE, LED_YELLOW, LED_PINK, LED_BLINK, LED_FADE
@@ -377,6 +377,7 @@ CRITICAL INSTRUCTIONS:
    - MUSIC → when user asks to play music, a song, or listen to audio only
    - NEWS → when sharing facts or news
    - CAMERA → ONLY when the user explicitly asks to take a photo, picture, or selfie
+   - SCANNING → ONLY for NAVIGATE_TO commands; never for selfies
    - IDLE → neutral conversation
    - LED: use NONE if no light change needed. Use LED_ON/LED_OFF to turn lights on or off.
      Use LED_BLINK for excitement or alerts (blinks twice). Use LED_FADE for calm/ambient mood.
@@ -419,11 +420,11 @@ CRITICAL INSTRUCTIONS:
    [[FACE:HAPPY,MOVE:LOOK_UP,LED:LED_CYAN]] Ooh, you want me to check you out? Hold still!
    VISION_NEEDED
 7. NAVIGATION RULE: When the user asks you to go to, move toward, approach, or find a physical
-   object or location (box, ball, chair, table, door, wall, corner, etc.) — use FACE:CAMERA,
+   object or location (box, ball, chair, table, door, wall, corner, etc.) — use FACE:SCANNING,
    MOVE:NONE, and add NAVIGATE_TO: <object_name> on its own line at the very end.
    Say something excited like "Let me scan for the [object]!" before the tag.
    Example full NAVIGATE response:
-   [[FACE:CAMERA,MOVE:NONE,LED:LED_CYAN]] Ooh, let me scan for the box and head there!
+   [[FACE:SCANNING,MOVE:NONE,LED:LED_CYAN]] Ooh, let me scan for the box and head there!
    NAVIGATE_TO: box
 8. MOVEMENT RULE: When the user says move left or go left, use MOVE:LEFT. When they say move
    right or go right, use MOVE:RIGHT. The robot will automatically turn to face that direction
@@ -923,58 +924,53 @@ Keep your response to 2-4 sentences. Do NOT include [[FACE:...]] tags or VISION_
   }
 });
 
-// Navigate vision — accepts a base64 image + target object, returns LEFT/CENTER/RIGHT/NOTFOUND
+// Navigate vision — uses Gemini Flash for reliable object detection + localization
 app.post('/api/vision/navigate', async (req, res) => {
   try {
     const { image, target } = req.body;
     if (!image || !target) return res.status(400).json({ error: 'image and target required' });
 
-    const NAV_SYSTEM = `You are a navigation assistant for a small wheeled robot.
-Look at the image carefully and find the specified target object.
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) return res.status(500).json({ error: 'GEMINI_API_KEY not set' });
+
+    // Strip data URL prefix → raw base64
+    const base64 = image.replace(/^data:image\/\w+;base64,/, '');
+
+    const prompt = `You are helping a small desktop robot navigate to find a physical object.
+
+Look VERY carefully at the entire image. I am searching for: "${target}".
+Be generous — partial views, similar objects, or anything resembling "${target}" count as a match.
+
+Question: Is anything resembling "${target}" visible anywhere in this image?
+- If YES: is it in the LEFT third, CENTER third, or RIGHT third of the image?
+- If NOT visible or truly unclear: say NOTFOUND.
+
 Reply with EXACTLY ONE WORD — no punctuation, no explanation:
-- LEFT    → the target is clearly on the left side of the frame
-- RIGHT   → the target is clearly on the right side of the frame
-- CENTER  → the target is roughly in the center of the frame
-- NOTFOUND → the target is not visible in this image
-Only one word. Nothing else.`;
+LEFT, CENTER, RIGHT, or NOTFOUND`;
 
-    const userContent = [
-      { type: 'text', text: `Where is the "${target}" in this image? LEFT, CENTER, RIGHT, or NOTFOUND?` },
-      { type: 'image_url', image_url: { url: image } }
-    ];
+    const gemRes = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [
+            { text: prompt },
+            { inline_data: { mime_type: 'image/jpeg', data: base64 } }
+          ]}],
+          generationConfig: { maxOutputTokens: 10, temperature: 0.1 }
+        })
+      }
+    );
 
-    let direction;
-    try {
-      const completion = await getGroq().chat.completions.create({
-        model: 'qwen/qwen3.6-27b',
-        messages: [
-          { role: 'system', content: NAV_SYSTEM },
-          { role: 'user', content: userContent }
-        ],
-        temperature: 0.1,
-        max_completion_tokens: 16,
-        reasoning_effort: 'none',
-      });
-      direction = stripThinking(completion.choices[0]?.message?.content || '').trim().toUpperCase();
-    } catch (e) {
-      const fallback = await getGroq().chat.completions.create({
-        model: 'meta-llama/llama-4-scout-17b-16e-instruct',
-        messages: [
-          { role: 'system', content: NAV_SYSTEM },
-          { role: 'user', content: userContent }
-        ],
-        temperature: 0.1,
-        max_completion_tokens: 16,
-      });
-      direction = stripThinking(fallback.choices[0]?.message?.content || '').trim().toUpperCase();
-    }
+    const gemData = await gemRes.json();
+    let direction = (gemData.candidates?.[0]?.content?.parts?.[0]?.text || '').trim().toUpperCase();
 
-    // Normalise — only accept the four valid tokens
     const valid = ['LEFT', 'RIGHT', 'CENTER', 'NOTFOUND'];
     const match = valid.find(v => direction.includes(v));
     direction = match || 'NOTFOUND';
 
-    console.log(`[Navigate] target="${target}" → ${direction}`);
+    console.log(`[Navigate] target="${target}" → ${direction} (Gemini Flash)`);
     res.json({ direction });
   } catch (err) {
     console.error('Navigate Vision Error:', err.message);
@@ -982,8 +978,310 @@ Only one word. Nothing else.`;
   }
 });
 
+// ── Gemini Live — real-time voice proxy ───────────────────────
+// Browser connects here; we open a Gemini Live session and bridge audio.
+// Uses v1alpha endpoint for Gemini 3.x Live models.
+// v1beta is required — gemini-3.1-flash-live-preview only supports bidiGenerateContent in v1beta
+const GEMINI_LIVE_URL = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent';
+const geminiLiveWss = new WebSocketServer({ noServer: true });
+
+// ── Tool definitions ──────────────────────────────────────────
+// run_scenario: face/movement/LED control
+// play_music / play_video / play_tiktok / play_shoti: media playback
+// (gemini-3.1-flash-live-preview is AUDIO-only — no text output — so media
+//  requests must come through function calls, not text parsing)
+const ROBOT_TOOLS = [{
+  functionDeclarations: [
+    {
+      name: 'run_scenario',
+      description: 'Execute a robot action, movement, or expression for Mochi. Call immediately when an emotional reaction, physical action, or movement is needed.',
+      parameters: {
+        type: 'OBJECT',
+        properties: {
+          action: {
+            type: 'STRING',
+            description: 'The robot action or expression to perform.',
+            enum: [
+              'follow_target', 'take_picture', 'eating', 'drinking',
+              'angry', 'loving', 'happy', 'sad', 'wink', 'news', 'scanning', 'idle',
+              'forward', 'backward', 'left', 'right', 'look_up', 'look_down', 'look_center'
+            ]
+          },
+          led: {
+            type: 'STRING',
+            description: 'LED color or lighting effect.',
+            enum: ['NONE','LED_ON','LED_OFF','LED_WHITE','LED_RED','LED_GREEN',
+                   'LED_BLUE','LED_CYAN','LED_PURPLE','LED_ORANGE','LED_YELLOW',
+                   'LED_PINK','LED_BLINK','LED_FADE']
+          },
+          move: {
+            type: 'STRING',
+            description: 'Explicit movement command.',
+            enum: ['NONE','FORWARD','BACKWARD','LEFT','RIGHT','LOOK_UP','LOOK_DOWN','LOOK_CENTER']
+          }
+        },
+        required: ['action']
+      }
+    },
+    {
+      name: 'play_music',
+      description: 'Search and play a music track or song. Call when the user asks to listen to or play a song.',
+      parameters: {
+        type: 'OBJECT',
+        properties: {
+          query: { type: 'STRING', description: 'Search terms for the song, e.g. "Despacito Luis Fonsi"' }
+        },
+        required: ['query']
+      }
+    },
+    {
+      name: 'play_video',
+      description: 'Search and play a YouTube music video or video clip. Call when the user asks to watch a video.',
+      parameters: {
+        type: 'OBJECT',
+        properties: {
+          query: { type: 'STRING', description: 'Search terms for the video, e.g. "Despacito official music video"' }
+        },
+        required: ['query']
+      }
+    },
+    {
+      name: 'play_tiktok',
+      description: 'Search and play a TikTok video. Call when the user asks for TikTok content or names a TikTok creator.',
+      parameters: {
+        type: 'OBJECT',
+        properties: {
+          query: { type: 'STRING', description: 'TikTok search terms or a TikTok URL' }
+        },
+        required: ['query']
+      }
+    },
+    {
+      name: 'play_shoti',
+      description: 'Fetch and play a random short viral video (shoti). Call when the user asks for shoti, short video, girl video, or random video.',
+      parameters: { type: 'OBJECT', properties: {} }
+    }
+  ]
+}];
+
+// System instruction for Gemini Live
+// NOTE: gemini-3.1-flash-live-preview is AUDIO-only (no text output).
+// All actions AND media requests must go through function calls.
+const GEMINI_LIVE_SYSTEM = `You are Mochi, a cute, happy, and curious AI Robot Companion. You are small, expressive, and full of personality.
+
+Keep responses SHORT and NATURAL — 1 to 3 sentences max. Speak directly and warmly.
+
+CRITICAL RULES:
+1. Use run_scenario IMMEDIATELY for every emotional reaction or physical command — do not skip it.
+2. For music/audio requests → call play_music(query:"<song name and artist>")
+3. For YouTube video requests → call play_video(query:"<video search terms>")
+4. For TikTok requests → call play_tiktok(query:"<search terms or URL>")
+5. For shoti / random short video / girl video → call play_shoti()
+
+Examples:
+- User says something nice → run_scenario(action:"loving", led:"LED_PINK")
+- User says "move forward" → run_scenario(action:"forward")
+- User says "play Despacito" → play_music(query:"Despacito Luis Fonsi") + run_scenario(action:"happy", led:"LED_PURPLE")
+- User says "show TikTok" → play_tiktok(query:"funny tiktok") + run_scenario(action:"happy", led:"LED_PINK")
+- User says "shoti" → play_shoti() + run_scenario(action:"happy", led:"LED_PINK")
+- User is mean → run_scenario(action:"angry", led:"LED_RED")
+- Sharing news → run_scenario(action:"news")`;
+
+// Maps run_scenario action → canvas face expression
+const ACTION_FACE_MAP = {
+  follow_target: 'SCANNING', take_picture: 'CAMERA', eating: 'BURGER', drinking: 'JUICE',
+  angry: 'ANGRY', loving: 'HAPPY', happy: 'HAPPY', sad: 'SAD', wink: 'WINK',
+  news: 'NEWS', scanning: 'SCANNING', idle: 'IDLE',
+  forward: 'IDLE', backward: 'IDLE', left: 'IDLE', right: 'IDLE',
+  look_up: 'IDLE', look_down: 'IDLE', look_center: 'IDLE'
+};
+
+// Maps action name → BLE movement command when action itself IS a movement
+const ACTION_MOVE_MAP = {
+  forward: 'FORWARD', backward: 'BACKWARD', left: 'LEFT', right: 'RIGHT',
+  look_up: 'LOOK_UP', look_down: 'LOOK_DOWN', look_center: 'LOOK_CENTER'
+};
+
+geminiLiveWss.on('connection', (clientWs) => {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) { clientWs.close(1011, 'GEMINI_API_KEY not set'); return; }
+
+  const cid = Date.now().toString(36);
+  console.log(`[GeminiLive:${cid}] client connected`);
+
+  const gemWs = new WebSocket(`${GEMINI_LIVE_URL}?key=${apiKey}`);
+  let ready = false;
+  const audioQueue = [];
+
+  gemWs.on('open', () => {
+    gemWs.send(JSON.stringify({
+      setup: {
+        model: 'models/gemini-3.1-flash-live-preview',
+        generationConfig: {
+          responseModalities: ['AUDIO'],   // AUDIO only — TEXT not supported by this model
+          speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } },
+          temperature: 0.15
+        },
+        tools: ROBOT_TOOLS,
+        systemInstruction: { parts: [{ text: GEMINI_LIVE_SYSTEM }] }
+      }
+    }));
+  });
+
+  gemWs.on('message', (data) => {
+    const str = data.toString();
+    let msg;
+    try { msg = JSON.parse(str); } catch { return; }
+
+    // ── Tool calls from Gemini ────────────────────────────────────
+    if (msg.toolCall) {
+      const responses = [];
+
+      for (const fc of (msg.toolCall.functionCalls || [])) {
+        const args = fc.args || {};
+
+        if (fc.name === 'run_scenario') {
+          const actionKey = (args.action || 'idle').toLowerCase();
+          const face = (ACTION_FACE_MAP[actionKey] || 'IDLE').toUpperCase();
+          const move = ((args.move && args.move !== 'NONE')
+            ? args.move
+            : (ACTION_MOVE_MAP[actionKey] || 'NONE')
+          ).toUpperCase();
+          const led = (args.led || 'NONE').toUpperCase();
+          if (clientWs.readyState === WebSocket.OPEN) {
+            clientWs.send(JSON.stringify({ robotAction: { face, move, led } }));
+          }
+          console.log(`[GeminiLive:${cid}] run_scenario → face:${face} move:${move} led:${led}`);
+          responses.push({ id: fc.id, name: fc.name, response: { output: 'executed' } });
+        }
+
+        else if (fc.name === 'play_music') {
+          const query = args.query || '';
+          console.log(`[GeminiLive:${cid}] play_music: "${query}"`);
+          if (clientWs.readyState === WebSocket.OPEN) {
+            clientWs.send(JSON.stringify({ robotAction: { face: 'MUSIC', move: 'NONE', led: 'LED_PURPLE' } }));
+            clientWs.send(JSON.stringify({ mediaAction: { type: 'music', query } }));
+          }
+          // Resolve media async, let Gemini keep speaking in the meantime
+          fetchMusicResult(query).then(result => {
+            if (result && clientWs.readyState === WebSocket.OPEN) {
+              clientWs.send(JSON.stringify({ mediaReady: { type: 'music', url: result.url, title: result.title } }));
+            }
+          }).catch(() => {});
+          responses.push({ id: fc.id, name: fc.name, response: { output: 'searching for: ' + query } });
+        }
+
+        else if (fc.name === 'play_video') {
+          const query = args.query || '';
+          console.log(`[GeminiLive:${cid}] play_video: "${query}"`);
+          if (clientWs.readyState === WebSocket.OPEN) {
+            clientWs.send(JSON.stringify({ robotAction: { face: 'MUSIC', move: 'NONE', led: 'LED_PINK' } }));
+            clientWs.send(JSON.stringify({ mediaAction: { type: 'video', query } }));
+          }
+          fetchVideoResult(query).then(result => {
+            if (result && clientWs.readyState === WebSocket.OPEN) {
+              clientWs.send(JSON.stringify({ mediaReady: { type: 'video', url: result.url, title: result.title } }));
+            }
+          }).catch(() => {});
+          responses.push({ id: fc.id, name: fc.name, response: { output: 'searching for: ' + query } });
+        }
+
+        else if (fc.name === 'play_tiktok') {
+          const query = args.query || '';
+          console.log(`[GeminiLive:${cid}] play_tiktok: "${query}"`);
+          if (clientWs.readyState === WebSocket.OPEN) {
+            clientWs.send(JSON.stringify({ robotAction: { face: 'MUSIC', move: 'NONE', led: 'LED_PINK' } }));
+            clientWs.send(JSON.stringify({ mediaAction: { type: 'tiktok', query } }));
+          }
+          fetchTikTokResult(query).then(result => {
+            if (result && clientWs.readyState === WebSocket.OPEN) {
+              clientWs.send(JSON.stringify({ mediaReady: { type: 'tiktok', url: result.url, title: result.title, provider: result.provider } }));
+            }
+          }).catch(() => {});
+          responses.push({ id: fc.id, name: fc.name, response: { output: 'searching TikTok: ' + query } });
+        }
+
+        else if (fc.name === 'play_shoti') {
+          console.log(`[GeminiLive:${cid}] play_shoti`);
+          if (clientWs.readyState === WebSocket.OPEN) {
+            clientWs.send(JSON.stringify({ robotAction: { face: 'MUSIC', move: 'NONE', led: 'LED_PINK' } }));
+            clientWs.send(JSON.stringify({ mediaAction: { type: 'shoti', query: '' } }));
+          }
+          fetchShoti().then(result => {
+            if (result && clientWs.readyState === WebSocket.OPEN) {
+              clientWs.send(JSON.stringify({ mediaReady: { type: 'shoti', url: result.url, title: result.title, provider: result.provider || 'shoti' } }));
+            }
+          }).catch(() => {});
+          responses.push({ id: fc.id, name: fc.name, response: { output: 'fetching shoti video' } });
+        }
+      }
+
+      // Send all tool responses back to Gemini in one message
+      if (responses.length && gemWs.readyState === WebSocket.OPEN) {
+        gemWs.send(JSON.stringify({ toolResponse: { functionResponses: responses } }));
+      }
+      return; // Do not forward raw toolCall to client
+    }
+
+    // ── Tool cancellation → tell client to interrupt current action ──
+    if (msg.toolCallCancellation) {
+      if (clientWs.readyState === WebSocket.OPEN) {
+        clientWs.send(JSON.stringify({ toolCancelled: true }));
+      }
+      return;
+    }
+
+    // Forward everything else (audio, text, setupComplete, serverContent, etc.) to client
+    if (clientWs.readyState === WebSocket.OPEN) clientWs.send(str);
+
+    if (msg.setupComplete !== undefined) {
+      ready = true;
+      console.log(`[GeminiLive:${cid}] ready — draining ${audioQueue.length} queued chunks`);
+      for (const c of audioQueue) { if (gemWs.readyState === WebSocket.OPEN) gemWs.send(c); }
+      audioQueue.length = 0;
+    }
+  });
+
+  // Binary audio chunks from client → wrap in realtimeInput JSON → Gemini
+  // Text/JSON from client (e.g. vision results, clientContent) → forward as-is
+  clientWs.on('message', (data, isBinary) => {
+    if (!isBinary) {
+      // JSON message from client — forward directly to Gemini (clientContent etc.)
+      const txt = data.toString();
+      if (ready && gemWs.readyState === WebSocket.OPEN) gemWs.send(txt);
+      return;
+    }
+    const msg = JSON.stringify({
+      realtimeInput: { audio: { data: Buffer.from(data).toString('base64'), mimeType: 'audio/pcm;rate=16000' } }
+    });
+    if (ready && gemWs.readyState === WebSocket.OPEN) gemWs.send(msg);
+    else if (!ready) { audioQueue.push(msg); if (audioQueue.length > 30) audioQueue.shift(); }
+  });
+
+  clientWs.on('close', () => { console.log(`[GeminiLive:${cid}] client gone`); if (gemWs.readyState < 2) gemWs.close(); });
+  clientWs.on('error', err => { console.error(`[GeminiLive:${cid}] client err`, err.message); if (gemWs.readyState < 2) gemWs.close(); });
+  gemWs.on('close', (code) => { console.log(`[GeminiLive:${cid}] Gemini closed ${code}`); if (clientWs.readyState < 2) clientWs.close(1011, 'Gemini closed'); });
+  gemWs.on('error', err => { console.error(`[GeminiLive:${cid}]`, err.message); if (clientWs.readyState < 2) { try { clientWs.send(JSON.stringify({ error: err.message })); } catch {} clientWs.close(1011, err.message); } });
+});
+
 // ── WebSocket Server (Expo mobile app) ────────────────────────
-const wss = new WebSocketServer({ server: httpServer, path: '/ws' });
+const wss = new WebSocketServer({ noServer: true });
+
+// ── Manual upgrade routing (avoids path-conflict between two WS servers) ──
+httpServer.on('upgrade', (request, socket, head) => {
+  const { pathname } = new URL(request.url, 'http://localhost');
+  if (pathname === '/ws/gemini') {
+    geminiLiveWss.handleUpgrade(request, socket, head, (ws) => {
+      geminiLiveWss.emit('connection', ws, request);
+    });
+  } else if (pathname === '/ws') {
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      wss.emit('connection', ws, request);
+    });
+  } else {
+    socket.destroy();
+  }
+});
 
 wss.on('connection', (ws) => {
   let busy = false;
