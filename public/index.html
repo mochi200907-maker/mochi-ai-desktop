@@ -1081,13 +1081,14 @@
       geminiNextStart = start + buf.duration;
 
       activeAudioSources.push(src);
-      src.onended = () => {
+           src.onended = () => {
         const idx = activeAudioSources.indexOf(src);
         if (idx !== -1) activeAudioSources.splice(idx, 1);
         if (audioCtx.currentTime >= geminiNextStart - 0.08 && robotState === 'SPEAKING') {
           robotState = 'IDLE'; currentExpression = 'IDLE'; mouthOpen = 0; mouthTarget = 0;
-        };    // ← dito nagtapos yung callback
-    }   
+        }
+      };    // ← isara ang callback dito
+    }       // ← isara ang function dito
 
     function initGeminiLive(source) {
       const SR = audioCtx.sampleRate, TR = 16000;
