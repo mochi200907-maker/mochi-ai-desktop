@@ -91,7 +91,6 @@ app.get('/app', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'inde
 app.use(express.static('public'));
 
 // ── TTS: stream Edge TTS WebSocket chunks directly to HTTP response ──────────
-// No temp file — first audio byte reaches the client in ~200 ms.
 const TTS_VOICE  = 'en-US-AnaNeural';
 const TTS_LANG   = 'en-US';
 const TTS_FORMAT = 'audio-24khz-96kbitrate-mono-mp3';
@@ -122,7 +121,6 @@ async function streamTTSDirect(text, res) {
     const timer = setTimeout(() => { ws.terminate(); reject(new Error('TTS timeout')); }, 15000);
 
     ws.on('open', () => {
-      // 1. speech.config
       ws.send(
         `Content-Type:application/json; charset=utf-8\r\nPath:speech.config\r\n\r\n` +
         JSON.stringify({ context: { synthesis: { audio: {
@@ -130,7 +128,6 @@ async function streamTTSDirect(text, res) {
           outputFormat: TTS_FORMAT,
         }}}})
       );
-      // 2. SSML
       const reqId = randomBytes(16).toString('hex');
       ws.send(
         `X-RequestId:${reqId}\r\nContent-Type:application/ssml+xml\r\nPath:ssml\r\n\r\n` +
@@ -173,12 +170,11 @@ async function generateTTSBuffer(text) {
   finally { try { fs.unlinkSync(tmpFile); } catch {} }
 }
 
-// Warm-up: open one WebSocket connection so subsequent requests are instant.
+// Warm-up
 (async () => {
   try {
     const { Writable } = await import('stream');
     const sink = new Writable({ write(_, __, cb) { cb(); } });
-    // Use a tiny fake res to drain warm-up audio without storing it
     const fakeRes = Object.assign(sink, { headersSent: false, setHeader() {}, status() { return this; }, end() {} });
     await streamTTSDirect('Hello', fakeRes);
     console.log('[TTS] warm-up done');
@@ -233,7 +229,6 @@ async function fetchTikTokByUrl(url) {
     if (!response.ok) return null;
     const body = await response.json();
     const data = body?.data;
-    // Use direct MP4 play URL from TikWM — no embed iframe needed
     const playUrl = absoluteTikwmUrl(data?.play || data?.hdplay || data?.wmplay);
     if (body?.code !== 0 || !playUrl) return null;
     return {
@@ -243,9 +238,7 @@ async function fetchTikTokByUrl(url) {
       provider: 'tiktok',
       author: data.author?.nickname || '',
     };
-  } catch {
-    return null;
-  }
+  } catch { return null; }
 }
 
 async function searchTikTok(query) {
@@ -262,7 +255,6 @@ async function searchTikTok(query) {
       absoluteTikwmUrl(v?.play || v?.hdplay || v?.wmplay),
     );
     if (body?.code !== 0 || !videos?.length) return null;
-    // Pick a random result for variety (same as ApiPanels reference)
     const pick = videos[Math.floor(Math.random() * videos.length)];
     const playUrl = absoluteTikwmUrl(pick.play || pick.hdplay || pick.wmplay);
     return {
@@ -272,28 +264,16 @@ async function searchTikTok(query) {
       provider: 'tiktok',
       author: pick.author?.nickname || '',
     };
-  } catch {
-    return null;
-  }
+  } catch { return null; }
 }
 
-// ── Shoti ─────────────────────────────────────────────────────
-// Shoti — random short girl/dance videos via TikWM search.
-// We rotate through several shoti-style search terms so each request
-// feels fresh, matching the spirit of the original Shoti API.
 const SHOTI_KEYWORDS = [
-  'pinay dance',
-  'cute girl dance tiktok',
-  'girl dance viral',
-  'pinay viral tiktok',
-  'cute girl trending',
-  'girl dance short',
-  'pinay tiktok viral 2024',
-  'cute pinay dance',
+  'pinay dance', 'cute girl dance tiktok', 'girl dance viral',
+  'pinay viral tiktok', 'cute girl trending', 'girl dance short',
+  'pinay tiktok viral 2024', 'cute pinay dance',
 ];
 async function fetchShoti() {
   try {
-    // Pick a random keyword set for variety
     const kw = SHOTI_KEYWORDS[Math.floor(Math.random() * SHOTI_KEYWORDS.length)];
     const url = `${TIKWM_BASE}/api/feed/search?keywords=${encodeURIComponent(kw)}&count=20&cursor=0&web=1`;
     const response = await fetch(url, {
@@ -306,7 +286,6 @@ async function fetchShoti() {
       absoluteTikwmUrl(v?.play || v?.hdplay || v?.wmplay),
     );
     if (body?.code !== 0 || !videos?.length) return null;
-    // Pick a random one so every shoti request feels different
     const pick = videos[Math.floor(Math.random() * videos.length)];
     const playUrl = absoluteTikwmUrl(pick.play || pick.hdplay || pick.wmplay);
     return {
@@ -316,9 +295,7 @@ async function fetchShoti() {
       provider: 'shoti',
       author: pick.author?.nickname || '',
     };
-  } catch {
-    return null;
-  }
+  } catch { return null; }
 }
 
 async function fetchTikTokResult(query) {
@@ -341,12 +318,11 @@ async function getAudioUrl(youtubeUrl) {
   } catch { return null; }
 }
 
-// Brief cache so /api/music/info pre-warms the result and /api/music/stream reuses it instantly.
 const _musicCache = new Map();
 async function fetchMusicResult(query) {
   const key = query.toLowerCase().trim();
   const hit = _musicCache.get(key);
-  if (hit && Date.now() - hit.ts < 60_000) return hit.data;   // 60 s TTL
+  if (hit && Date.now() - hit.ts < 60_000) return hit.data;
 
   const searchResult = await searchYouTube(query);
   if (!searchResult) return null;
@@ -358,7 +334,7 @@ async function fetchMusicResult(query) {
   return data;
 }
 
-// ── System prompt ─────────────────────────────────────────────
+// ── System prompt (non-Live fallback) ─────────────────────────
 const SYSTEM_PROMPT = `
 You are Mochi, a living, expressive, and curious desktop AI robot companion.
 CRITICAL INSTRUCTIONS:
@@ -467,12 +443,9 @@ async function queryLLM(messages) {
 
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 
-// Speech-to-Text
 app.post('/api/stt', async (req, res) => {
-  // Pick an extension that matches what the browser actually sent so Whisper
-  // can detect the codec correctly (it relies on the file extension).
   const contentType = (req.headers['content-type'] || '').toLowerCase();
-  let ext = 'webm'; // safe default — browsers almost always send webm/opus
+  let ext = 'webm';
   if (contentType.includes('ogg'))       ext = 'ogg';
   else if (contentType.includes('mp4') || contentType.includes('m4a')) ext = 'mp4';
   else if (contentType.includes('wav'))  ext = 'wav';
@@ -499,8 +472,6 @@ app.post('/api/stt', async (req, res) => {
   }
 });
 
-// Text-to-Speech — GET (stream, used by both web UI and mobile app)
-// /api/tts/stream?text=hello  — chunked, starts playing in ~200 ms
 app.get('/api/tts/stream', async (req, res) => {
   const text = req.query.text;
   if (!text?.trim()) return res.status(400).json({ error: 'text query param required' });
@@ -512,7 +483,6 @@ app.get('/api/tts/stream', async (req, res) => {
   }
 });
 
-// Text-to-Speech — POST (legacy, kept for Expo WS handler)
 app.post('/api/tts', async (req, res) => {
   try {
     const { text } = req.body;
@@ -524,9 +494,6 @@ app.post('/api/tts', async (req, res) => {
   }
 });
 
-// Music URL — returns the direct audio CDN URL + title so the browser
-// can stream it without going through this server (avoids proxy timeouts
-// that kill long songs after ~2 minutes on Replit).
 app.get('/api/music/url', async (req, res) => {
   const q = req.query.q?.trim();
   if (!q) return res.status(400).json({ error: 'q param required' });
@@ -541,8 +508,6 @@ app.get('/api/music/url', async (req, res) => {
   }
 });
 
-// Video URL — returns the original YouTube watch URL so clients can use
-// YouTube's video player. Audio requests must continue using /api/music/url.
 app.get('/api/video/url', async (req, res) => {
   const q = req.query.q?.trim();
   if (!q) return res.status(400).json({ error: 'q param required' });
@@ -557,8 +522,6 @@ app.get('/api/video/url', async (req, res) => {
   }
 });
 
-// TikTok URL — searches TikWM by keyword or resolves a supplied TikTok link.
-// Returns a direct MP4 play URL from TikWM so the browser plays it natively.
 app.get('/api/tiktok/url', async (req, res) => {
   const q = req.query.q?.trim();
   if (!q) return res.status(400).json({ error: 'q param required' });
@@ -573,7 +536,6 @@ app.get('/api/tiktok/url', async (req, res) => {
   }
 });
 
-// Shoti URL — fetches a random short video from the Shoti API.
 app.get('/api/shoti/url', async (req, res) => {
   try {
     const result = await fetchShoti();
@@ -586,23 +548,15 @@ app.get('/api/shoti/url', async (req, res) => {
   }
 });
 
-// Proxy video — fetches a TikTok/Shoti MP4 from TikWM and pipes it to the
-// browser with proper CORS and Range support so autoplay works on mobile.
-// Only proxies URLs from tikwm.com to prevent open-proxy abuse.
 app.get('/proxy-video', async (req, res) => {
   const url = req.query.url?.trim();
   if (!url) return res.status(400).json({ error: 'url param required' });
-
   let parsed;
   try { parsed = new URL(url); } catch { return res.status(400).json({ error: 'invalid url' }); }
-  // Only proxy HTTPS requests to tikwm.com or its subdomains (e.g. cdn.tikwm.com).
-  // Exact suffix + protocol check prevents evil-lookalike and HTTP downgrade abuse.
   const host = parsed.hostname;
   const isAllowed = parsed.protocol === 'https:' &&
     (host === 'tikwm.com' || host.endsWith('.tikwm.com'));
-  if (!isAllowed) {
-    return res.status(403).json({ error: 'only https://tikwm.com URLs are allowed' });
-  }
+  if (!isAllowed) return res.status(403).json({ error: 'only https://tikwm.com URLs are allowed' });
 
   try {
     const upstreamHeaders = {
@@ -618,9 +572,6 @@ app.get('/proxy-video', async (req, res) => {
       headers: upstreamHeaders,
       signal: AbortSignal.timeout(30000),
     });
-
-    // Reject non-success responses before streaming anything — avoids silently
-    // piping an error page as "video" to the browser.
     if (!upstream.ok && upstream.status !== 206) {
       console.error(`[Proxy] upstream returned ${upstream.status} for ${url}`);
       return res.status(502).json({ error: `Upstream error: ${upstream.status}` });
@@ -640,7 +591,6 @@ app.get('/proxy-video', async (req, res) => {
     if (cl) res.setHeader('Content-Length', cl);
     if (cr) res.setHeader('Content-Range', cr);
     if (ar) res.setHeader('Accept-Ranges', ar);
-
     res.status(upstream.status === 206 ? 206 : 200);
 
     const { Readable } = await import('stream');
@@ -654,40 +604,28 @@ app.get('/proxy-video', async (req, res) => {
   }
 });
 
-// Video download — downloads TikTok/Shoti MP4 from TikWM to a temp file,
-// serves it with full Range support (seekable), then deletes the temp file.
 app.get('/api/video/download', async (req, res) => {
   const url = req.query.url?.trim();
   if (!url) return res.status(400).json({ error: 'url param required' });
-
   let parsed;
   try { parsed = new URL(url); } catch { return res.status(400).json({ error: 'invalid url' }); }
   const host = parsed.hostname;
   const isAllowed = parsed.protocol === 'https:' &&
     (host === 'tikwm.com' || host.endsWith('.tikwm.com'));
-  if (!isAllowed) {
-    return res.status(403).json({ error: 'only https://tikwm.com URLs are allowed' });
-  }
+  if (!isAllowed) return res.status(403).json({ error: 'only https://tikwm.com URLs are allowed' });
 
   const tmpFile = path.join(os.tmpdir(), `mochi_vid_${Date.now()}_${randomBytes(4).toString('hex')}.mp4`);
   try {
-    // Helper: attempt a fetch with the given URL and headers; return null on non-2xx
     async function tryFetch(targetUrl, headers) {
       const r = await fetch(targetUrl, { headers, signal: AbortSignal.timeout(60000) });
       return r.ok ? r : null;
     }
-
     const baseHeaders = {
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
       'Accept': 'video/mp4,video/*;q=0.9,*/*;q=0.8',
     };
-
     console.log(`[Video] downloading: ${url}`);
-
-    // Attempt 1 — plain fetch (no Referer/Origin; CDN may reject cross-origin headers)
     let upstream = await tryFetch(url, baseHeaders);
-
-    // Attempt 2 — Re-query TikWM API to get a fresh play URL (original may have expired)
     if (!upstream) {
       console.warn('[Video] attempt 1 failed, re-fetching TikWM API for fresh URL…');
       const videoId = url.match(/\/(\d{10,25})(?:\.mp4)?(?:\?|$)/)?.[1];
@@ -708,13 +646,10 @@ app.get('/api/video/download', async (req, res) => {
         } catch (e) { console.warn('[Video] TikWM re-query failed:', e.message); }
       }
     }
-
     if (!upstream) {
       console.error('[Video] all download attempts failed');
       return res.status(502).json({ error: 'Video source unavailable' });
     }
-
-    // Download the full video to a temp file before serving
     const { Readable } = await import('stream');
     const writeStream = fs.createWriteStream(tmpFile);
     const nodeStream = Readable.fromWeb(upstream.body);
@@ -724,16 +659,12 @@ app.get('/api/video/download', async (req, res) => {
       writeStream.on('error', reject);
       nodeStream.on('error', reject);
     });
-
     const size = fs.statSync(tmpFile).size;
     console.log(`[Video] downloaded ${size} bytes → serving`);
-
-    // res.sendFile handles Content-Length, Accept-Ranges, and Range requests automatically.
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Expose-Headers', 'Content-Length, Content-Range, Accept-Ranges');
     res.sendFile(tmpFile, { headers: { 'Content-Type': 'video/mp4' } }, (err) => {
       if (err && !res.headersSent) res.status(500).end();
-      // Always clean up the temp file once the response is complete
       try { fs.unlinkSync(tmpFile); console.log('[Video] temp file deleted'); } catch {}
     });
   } catch (err) {
@@ -743,8 +674,6 @@ app.get('/api/video/download', async (req, res) => {
   }
 });
 
-// Music stream — search + fetch + stream in ONE request so the signed URL
-// never has a chance to expire between the lookup and the actual playback.
 app.get('/api/music/stream', async (req, res) => {
   const q = req.query.q?.trim();
   if (!q) return res.status(400).json({ error: 'q param required' });
@@ -753,8 +682,6 @@ app.get('/api/music/stream', async (req, res) => {
     const result = await fetchMusicResult(q);
     if (!result) return res.status(404).json({ error: 'Not found' });
     console.log(`[Music] streaming: ${result.title}`);
-
-    // Immediately fetch the signed URL before it can expire
     const upstream = await fetch(result.url, {
       headers: { 'User-Agent': 'Mozilla/5.0' },
       signal: AbortSignal.timeout(30000),
@@ -763,8 +690,6 @@ app.get('/api/music/stream', async (req, res) => {
       console.error(`[Music] upstream ${upstream.status} for "${result.title}"`);
       return res.status(502).json({ error: 'Audio source error' });
     }
-
-    // Expose title to the client via a response header
     const safeTitle = result.title.replace(/[^\x20-\x7E]/g, ' ').replace(/"/g, "'");
     res.setHeader('X-Music-Title', safeTitle);
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -794,7 +719,6 @@ app.get('/api/music/stream', async (req, res) => {
   }
 });
 
-// Chat (web UI)
 app.post('/api/chat', async (req, res) => {
   try {
     const { history } = req.body;
@@ -806,18 +730,13 @@ app.post('/api/chat', async (req, res) => {
   }
 });
 
-// Streaming chat — sends chunks as newline-delimited JSON so the client can
-// fire BLE commands the instant the [[FACE:...]] tag closes at the start of
-// the response, without waiting for the full reply.
 app.post('/api/chat/stream', async (req, res) => {
   try {
     const { history } = req.body;
     const fullMessages = [{ role: 'system', content: SYSTEM_PROMPT }, ...history];
-
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Transfer-Encoding', 'chunked');
     res.setHeader('Cache-Control', 'no-cache');
-
     let stream;
     try {
       stream = await getGroq().chat.completions.create({
@@ -839,14 +758,11 @@ app.post('/api/chat/stream', async (req, res) => {
         stream: true,
       });
     }
-
     let buffer = '';
     let thinkOpen = false;
     for await (const chunk of stream) {
       let token = chunk.choices[0]?.delta?.content || '';
       if (!token) continue;
-
-      // Strip <think>...</think> blocks on the fly
       buffer += token;
       if (buffer.includes('<think>')) thinkOpen = true;
       if (thinkOpen) {
@@ -854,14 +770,10 @@ app.post('/api/chat/stream', async (req, res) => {
           buffer = buffer.replace(/<think>[\s\S]*?<\/think>/gi, '');
           thinkOpen = false;
         } else {
-          continue; // still inside think block — don't emit yet
+          continue;
         }
       }
-
-      if (buffer) {
-        res.write(buffer);
-        buffer = '';
-      }
+      if (buffer) { res.write(buffer); buffer = ''; }
     }
     if (buffer) res.write(buffer);
     res.end();
@@ -872,23 +784,19 @@ app.post('/api/chat/stream', async (req, res) => {
   }
 });
 
-// Vision analysis — accepts a base64 image + original question, returns Mochi's observation
 app.post('/api/vision', async (req, res) => {
   try {
     const { image, question } = req.body;
     if (!image) return res.status(400).json({ error: 'image required' });
-
     const VISION_SYSTEM = `You are Mochi, a cute and expressive desktop AI robot companion.
 You have just taken a photo of the user with the camera and you can now see them clearly.
 Describe what you see in a warm, playful, and personal way — comment on their appearance,
 outfit, expression, or anything interesting you notice. Be specific and genuine.
 Keep your response to 2-4 sentences. Do NOT include [[FACE:...]] tags or VISION_NEEDED.`;
-
     const userContent = [
       { type: 'text', text: question || 'What do you see?' },
       { type: 'image_url', image_url: { url: image } }
     ];
-
     let reply;
     try {
       const completion = await getGroq().chat.completions.create({
@@ -903,7 +811,6 @@ Keep your response to 2-4 sentences. Do NOT include [[FACE:...]] tags or VISION_
       });
       reply = stripThinking(completion.choices[0]?.message?.content || '');
     } catch (e) {
-      // Fallback to llama vision if available
       const fallback = await getGroq().chat.completions.create({
         model: 'meta-llama/llama-4-scout-17b-16e-instruct',
         messages: [
@@ -915,7 +822,6 @@ Keep your response to 2-4 sentences. Do NOT include [[FACE:...]] tags or VISION_
       });
       reply = stripThinking(fallback.choices[0]?.message?.content || '');
     }
-
     console.log(`[Vision] → "${reply.slice(0, 80)}..."`);
     res.json({ response: reply });
   } catch (err) {
@@ -924,30 +830,21 @@ Keep your response to 2-4 sentences. Do NOT include [[FACE:...]] tags or VISION_
   }
 });
 
-// Navigate vision — uses Gemini Flash for reliable object detection + localization
 app.post('/api/vision/navigate', async (req, res) => {
   try {
     const { image, target } = req.body;
     if (!image || !target) return res.status(400).json({ error: 'image and target required' });
-
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) return res.status(500).json({ error: 'GEMINI_API_KEY not set' });
-
-    // Strip data URL prefix → raw base64
     const base64 = image.replace(/^data:image\/\w+;base64,/, '');
-
     const prompt = `You are helping a small desktop robot navigate to find a physical object.
-
 Look VERY carefully at the entire image. I am searching for: "${target}".
 Be generous — partial views, similar objects, or anything resembling "${target}" count as a match.
-
 Question: Is anything resembling "${target}" visible anywhere in this image?
 - If YES: is it in the LEFT third, CENTER third, or RIGHT third of the image?
 - If NOT visible or truly unclear: say NOTFOUND.
-
 Reply with EXACTLY ONE WORD — no punctuation, no explanation:
 LEFT, CENTER, RIGHT, or NOTFOUND`;
-
     const gemRes = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
       {
@@ -962,14 +859,11 @@ LEFT, CENTER, RIGHT, or NOTFOUND`;
         })
       }
     );
-
     const gemData = await gemRes.json();
     let direction = (gemData.candidates?.[0]?.content?.parts?.[0]?.text || '').trim().toUpperCase();
-
     const valid = ['LEFT', 'RIGHT', 'CENTER', 'NOTFOUND'];
     const match = valid.find(v => direction.includes(v));
     direction = match || 'NOTFOUND';
-
     console.log(`[Navigate] target="${target}" → ${direction} (Gemini Flash)`);
     res.json({ direction });
   } catch (err) {
@@ -979,17 +873,10 @@ LEFT, CENTER, RIGHT, or NOTFOUND`;
 });
 
 // ── Gemini Live — real-time voice proxy ───────────────────────
-// Browser connects here; we open a Gemini Live session and bridge audio.
-// Uses v1alpha endpoint for Gemini 3.x Live models.
-// v1beta is required — gemini-3.1-flash-live-preview only supports bidiGenerateContent in v1beta
 const GEMINI_LIVE_URL = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent';
+
 const geminiLiveWss = new WebSocketServer({ noServer: true });
 
-// ── Tool definitions ──────────────────────────────────────────
-// run_scenario: face/movement/LED control
-// play_music / play_video / play_tiktok / play_shoti: media playback
-// (gemini-3.1-flash-live-preview is AUDIO-only — no text output — so media
-//  requests must come through function calls, not text parsing)
 const ROBOT_TOOLS = [{
   functionDeclarations: [
     {
@@ -1060,13 +947,27 @@ const ROBOT_TOOLS = [{
       name: 'play_shoti',
       description: 'Fetch and play a random short viral video (shoti). Call when the user asks for shoti, short video, girl video, or random video.',
       parameters: { type: 'OBJECT', properties: {} }
+    },
+    // ── NEW: Vision & Navigation tools ─────────────────────────
+    {
+      name: 'capture_photo',
+      description: 'Capture a photo from the camera to see the user or analyze something visually. Call this BEFORE describing or commenting on anything visual (outfit, face, appearance, objects in view).',
+      parameters: { type: 'OBJECT', properties: {} }
+    },
+    {
+      name: 'navigate_to',
+      description: 'Navigate the robot toward a physical object or location in the room. The robot will scan with its camera and move toward the target.',
+      parameters: {
+        type: 'OBJECT',
+        properties: {
+          target: { type: 'STRING', description: 'The object or location to navigate to, e.g. "box", "ball", "chair", "table", "door"' }
+        },
+        required: ['target']
+      }
     }
   ]
 }];
 
-// System instruction for Gemini Live
-// NOTE: gemini-3.1-flash-live-preview is AUDIO-only (no text output).
-// All actions AND media requests must go through function calls.
 const GEMINI_LIVE_SYSTEM = `You are Mochi, a cute, happy, and curious AI Robot Companion. You are small, expressive, and full of personality.
 
 Keep responses SHORT and NATURAL — 1 to 3 sentences max. Speak directly and warmly.
@@ -1077,6 +978,9 @@ CRITICAL RULES:
 3. For YouTube video requests → call play_video(query:"<video search terms>")
 4. For TikTok requests → call play_tiktok(query:"<search terms or URL>")
 5. For shoti / random short video / girl video → call play_shoti()
+6. For vision requests (how user looks, outfit, face, what's in camera view) → FIRST call capture_photo(), then describe what you see after receiving the image.
+7. For navigation (go to box, find ball, approach chair) → call navigate_to(target:"<object name>")
+8. NEVER describe visuals from memory — always use capture_photo() first.
 
 Examples:
 - User says something nice → run_scenario(action:"loving", led:"LED_PINK")
@@ -1085,9 +989,10 @@ Examples:
 - User says "show TikTok" → play_tiktok(query:"funny tiktok") + run_scenario(action:"happy", led:"LED_PINK")
 - User says "shoti" → play_shoti() + run_scenario(action:"happy", led:"LED_PINK")
 - User is mean → run_scenario(action:"angry", led:"LED_RED")
-- Sharing news → run_scenario(action:"news")`;
+- Sharing news → run_scenario(action:"news")
+- User asks "how do I look" → capture_photo() (wait for result, then describe)
+- User says "go to the box" → navigate_to(target:"box")`;
 
-// Maps run_scenario action → canvas face expression
 const ACTION_FACE_MAP = {
   follow_target: 'SCANNING', take_picture: 'CAMERA', eating: 'BURGER', drinking: 'JUICE',
   angry: 'ANGRY', loving: 'HAPPY', happy: 'HAPPY', sad: 'SAD', wink: 'WINK',
@@ -1096,7 +1001,6 @@ const ACTION_FACE_MAP = {
   look_up: 'IDLE', look_down: 'IDLE', look_center: 'IDLE'
 };
 
-// Maps action name → BLE movement command when action itself IS a movement
 const ACTION_MOVE_MAP = {
   forward: 'FORWARD', backward: 'BACKWARD', left: 'LEFT', right: 'RIGHT',
   look_up: 'LOOK_UP', look_down: 'LOOK_DOWN', look_center: 'LOOK_CENTER'
@@ -1118,7 +1022,7 @@ geminiLiveWss.on('connection', (clientWs) => {
       setup: {
         model: 'models/gemini-3.1-flash-live-preview',
         generationConfig: {
-          responseModalities: ['AUDIO'],   // AUDIO only — TEXT not supported by this model
+          responseModalities: ['AUDIO'],
           speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } },
           temperature: 0.15
         },
@@ -1135,7 +1039,7 @@ geminiLiveWss.on('connection', (clientWs) => {
 
     // ── Tool calls from Gemini ────────────────────────────────────
     if (msg.toolCall) {
-      const responses = [];
+      const immediateResponses = [];
 
       for (const fc of (msg.toolCall.functionCalls || [])) {
         const args = fc.args || {};
@@ -1152,7 +1056,7 @@ geminiLiveWss.on('connection', (clientWs) => {
             clientWs.send(JSON.stringify({ robotAction: { face, move, led } }));
           }
           console.log(`[GeminiLive:${cid}] run_scenario → face:${face} move:${move} led:${led}`);
-          responses.push({ id: fc.id, name: fc.name, response: { output: 'executed' } });
+          immediateResponses.push({ id: fc.id, name: fc.name, response: { output: 'executed' } });
         }
 
         else if (fc.name === 'play_music') {
@@ -1162,13 +1066,12 @@ geminiLiveWss.on('connection', (clientWs) => {
             clientWs.send(JSON.stringify({ robotAction: { face: 'MUSIC', move: 'NONE', led: 'LED_PURPLE' } }));
             clientWs.send(JSON.stringify({ mediaAction: { type: 'music', query } }));
           }
-          // Resolve media async, let Gemini keep speaking in the meantime
           fetchMusicResult(query).then(result => {
             if (result && clientWs.readyState === WebSocket.OPEN) {
               clientWs.send(JSON.stringify({ mediaReady: { type: 'music', url: result.url, title: result.title } }));
             }
           }).catch(() => {});
-          responses.push({ id: fc.id, name: fc.name, response: { output: 'searching for: ' + query } });
+          immediateResponses.push({ id: fc.id, name: fc.name, response: { output: 'searching for: ' + query } });
         }
 
         else if (fc.name === 'play_video') {
@@ -1183,7 +1086,7 @@ geminiLiveWss.on('connection', (clientWs) => {
               clientWs.send(JSON.stringify({ mediaReady: { type: 'video', url: result.url, title: result.title } }));
             }
           }).catch(() => {});
-          responses.push({ id: fc.id, name: fc.name, response: { output: 'searching for: ' + query } });
+          immediateResponses.push({ id: fc.id, name: fc.name, response: { output: 'searching for: ' + query } });
         }
 
         else if (fc.name === 'play_tiktok') {
@@ -1198,7 +1101,7 @@ geminiLiveWss.on('connection', (clientWs) => {
               clientWs.send(JSON.stringify({ mediaReady: { type: 'tiktok', url: result.url, title: result.title, provider: result.provider } }));
             }
           }).catch(() => {});
-          responses.push({ id: fc.id, name: fc.name, response: { output: 'searching TikTok: ' + query } });
+          immediateResponses.push({ id: fc.id, name: fc.name, response: { output: 'searching TikTok: ' + query } });
         }
 
         else if (fc.name === 'play_shoti') {
@@ -1212,18 +1115,34 @@ geminiLiveWss.on('connection', (clientWs) => {
               clientWs.send(JSON.stringify({ mediaReady: { type: 'shoti', url: result.url, title: result.title, provider: result.provider || 'shoti' } }));
             }
           }).catch(() => {});
-          responses.push({ id: fc.id, name: fc.name, response: { output: 'fetching shoti video' } });
+          immediateResponses.push({ id: fc.id, name: fc.name, response: { output: 'fetching shoti video' } });
+        }
+
+        // ── NEW: Vision & Navigation tools (async, don't respond immediately) ──
+        else if (fc.name === 'capture_photo') {
+          console.log(`[GeminiLive:${cid}] capture_photo requested`);
+          if (clientWs.readyState === WebSocket.OPEN) {
+            clientWs.send(JSON.stringify({ needPhoto: true, toolCallId: fc.id }));
+          }
+          // DO NOT push to immediateResponses — we wait for client to send photo back
+        }
+
+        else if (fc.name === 'navigate_to') {
+          const target = args.target || '';
+          console.log(`[GeminiLive:${cid}] navigate_to: "${target}"`);
+          if (clientWs.readyState === WebSocket.OPEN) {
+            clientWs.send(JSON.stringify({ needNavigate: true, target, toolCallId: fc.id }));
+          }
+          // DO NOT push to immediateResponses — we wait for client to finish navigation
         }
       }
 
-      // Send all tool responses back to Gemini in one message
-      if (responses.length && gemWs.readyState === WebSocket.OPEN) {
-        gemWs.send(JSON.stringify({ toolResponse: { functionResponses: responses } }));
+      if (immediateResponses.length && gemWs.readyState === WebSocket.OPEN) {
+        gemWs.send(JSON.stringify({ toolResponse: { functionResponses: immediateResponses } }));
       }
-      return; // Do not forward raw toolCall to client
+      return;
     }
 
-    // ── Tool cancellation → tell client to interrupt current action ──
     if (msg.toolCallCancellation) {
       if (clientWs.readyState === WebSocket.OPEN) {
         clientWs.send(JSON.stringify({ toolCancelled: true }));
@@ -1231,7 +1150,6 @@ geminiLiveWss.on('connection', (clientWs) => {
       return;
     }
 
-    // Forward everything else (audio, text, setupComplete, serverContent, etc.) to client
     if (clientWs.readyState === WebSocket.OPEN) clientWs.send(str);
 
     if (msg.setupComplete !== undefined) {
@@ -1242,12 +1160,55 @@ geminiLiveWss.on('connection', (clientWs) => {
     }
   });
 
-  // Binary audio chunks from client → wrap in realtimeInput JSON → Gemini
-  // Text/JSON from client (e.g. vision results, clientContent) → forward as-is
   clientWs.on('message', (data, isBinary) => {
     if (!isBinary) {
-      // JSON message from client — forward directly to Gemini (clientContent etc.)
       const txt = data.toString();
+      // ── Intercept vision & navigation responses from client ──
+      try {
+        const msg = JSON.parse(txt);
+        if (msg.photoData && msg.toolCallId) {
+          // 1. Complete the tool call first
+          if (gemWs.readyState === WebSocket.OPEN) {
+            gemWs.send(JSON.stringify({
+              toolResponse: {
+                functionResponses: [{
+                  id: msg.toolCallId,
+                  name: 'capture_photo',
+                  response: { output: 'Photo captured successfully' }
+                }]
+              }
+            }));
+            // 2. Send the image as a new user turn so Gemini can analyze it
+            gemWs.send(JSON.stringify({
+              clientContent: {
+                turns: [{
+                  role: 'user',
+                  parts: [
+                    { text: 'Here is the photo from my camera. Please describe what you see in a warm, playful, and personal way.' },
+                    { inlineData: { mimeType: 'image/jpeg', data: msg.photoData } }
+                  ]
+                }],
+                turnComplete: true
+              }
+            }));
+          }
+          return;
+        }
+        if (msg.navigateResult && msg.toolCallId) {
+          if (gemWs.readyState === WebSocket.OPEN) {
+            gemWs.send(JSON.stringify({
+              toolResponse: {
+                functionResponses: [{
+                  id: msg.toolCallId,
+                  name: 'navigate_to',
+                  response: { output: msg.navigateResult }
+                }]
+              }
+            }));
+          }
+          return;
+        }
+      } catch {}
       if (ready && gemWs.readyState === WebSocket.OPEN) gemWs.send(txt);
       return;
     }
@@ -1267,7 +1228,6 @@ geminiLiveWss.on('connection', (clientWs) => {
 // ── WebSocket Server (Expo mobile app) ────────────────────────
 const wss = new WebSocketServer({ noServer: true });
 
-// ── Manual upgrade routing (avoids path-conflict between two WS servers) ──
 httpServer.on('upgrade', (request, socket, head) => {
   const { pathname } = new URL(request.url, 'http://localhost');
   if (pathname === '/ws/gemini') {
@@ -1305,10 +1265,8 @@ wss.on('connection', (ws) => {
       try {
         const audioBuffer = Buffer.from(msg.slice(6), 'base64');
         console.log(`[WS:${cid}] audio ${audioBuffer.length} bytes`);
-
         send('STATE:THINKING');
 
-        // STT
         fs.writeFileSync(tmpFile, audioBuffer);
         const transcription = await getGroq().audio.transcriptions.create({
           file: fs.createReadStream(tmpFile),
@@ -1321,63 +1279,35 @@ wss.on('connection', (ws) => {
         if (!userText) { send('STATE:IDLE'); busy = false; return; }
         send(`TRANSCRIPT:${userText}`);
 
-        // LLM
         const response = await queryLLM([{ role: 'user', content: userText }]);
-
-        // Parse [[FACE:X,MOVE:Y]]
         const tagMatch = response.match(/\[\[FACE:([A-Z]+),MOVE:([A-Z_]+)\]\]/);
         const expression = tagMatch?.[1] ?? 'HAPPY';
         const move = tagMatch?.[2] ?? 'NONE';
         send(`FACE:${expression},MOVE:${move}`);
 
-        // Strip face tag, extract the requested media query.
         let cleanText = response.replace(/\[\[.*?\]\]/g, '').trim();
         let musicQuery = null;
         let videoQuery = null;
         let tiktokQuery = null;
         let shotiQuery = false;
-        const musicMatch = cleanText.match(/\nMUSIC_QUERY:\s*(.+)/i) || cleanText.match(/MUSIC_QUERY:\s*(.+)/i);
-        if (musicMatch) {
-          musicQuery = musicMatch[1].trim();
-          cleanText = cleanText.replace(/\n?MUSIC_QUERY:.+/i, '').trim();
-        }
-        const videoMatch = cleanText.match(/\nVIDEO_QUERY:\s*(.+)/i) || cleanText.match(/VIDEO_QUERY:\s*(.+)/i);
-        if (videoMatch) {
-          videoQuery = videoMatch[1].trim();
-          cleanText = cleanText.replace(/\n?VIDEO_QUERY:.+/i, '').trim();
-        }
-        const tiktokMatch = cleanText.match(/\nTIKTOK_QUERY:\s*(.+)/i) || cleanText.match(/TIKTOK_QUERY:\s*(.+)/i);
-        if (tiktokMatch) {
-          tiktokQuery = tiktokMatch[1].trim();
-          cleanText = cleanText.replace(/\n?TIKTOK_QUERY:.+/i, '').trim();
-        }
-        if (/SHOTI_QUERY/i.test(cleanText)) {
-          shotiQuery = true;
-          cleanText = cleanText.replace(/\n?SHOTI_QUERY:.*/gi, '').trim();
-        }
+        const musicMatch = cleanText.match(/\n?MUSIC_QUERY:\s*(.+)/i) || cleanText.match(/MUSIC_QUERY:\s*(.+)/i);
+        if (musicMatch) { musicQuery = musicMatch[1].trim(); cleanText = cleanText.replace(/\n?MUSIC_QUERY:.+/i, '').trim(); }
+        const videoMatch = cleanText.match(/\n?VIDEO_QUERY:\s*(.+)/i) || cleanText.match(/VIDEO_QUERY:\s*(.+)/i);
+        if (videoMatch) { videoQuery = videoMatch[1].trim(); cleanText = cleanText.replace(/\n?VIDEO_QUERY:.+/i, '').trim(); }
+        const tiktokMatch = cleanText.match(/\n?TIKTOK_QUERY:\s*(.+)/i) || cleanText.match(/TIKTOK_QUERY:\s*(.+)/i);
+        if (tiktokMatch) { tiktokQuery = tiktokMatch[1].trim(); cleanText = cleanText.replace(/\n?TIKTOK_QUERY:.+/i, '').trim(); }
+        if (/SHOTI_QUERY/i.test(cleanText)) { shotiQuery = true; cleanText = cleanText.replace(/\n?SHOTI_QUERY:.*/gi, '').trim(); }
+
         const asksForShoti = /\b(shot[io]|shoti|short video|girl video)\b/i.test(userText);
         const asksForTikTok = /\b(tiktok|tik tok|reels?)\b/i.test(userText);
         const asksForVideo = /\b(video|music video|videoclip|video clip|watch|panoorin|manood)\b/i.test(userText);
-        // Fallback: detect shoti/tiktok from user text when LLM didn't tag it
-        if (asksForShoti && !shotiQuery && !tiktokQuery) {
-          shotiQuery = true;
-          videoQuery = null;
-          musicQuery = null;
-        }
-        if (asksForTikTok && !tiktokQuery && !shotiQuery) {
-          tiktokQuery = videoQuery || musicQuery || userText;
-          videoQuery = null;
-          musicQuery = null;
-        }
+        if (asksForShoti && !shotiQuery && !tiktokQuery) { shotiQuery = true; videoQuery = null; musicQuery = null; }
+        if (asksForTikTok && !tiktokQuery && !shotiQuery) { tiktokQuery = videoQuery || musicQuery || userText; videoQuery = null; musicQuery = null; }
         if (shotiQuery) { tiktokQuery = null; videoQuery = null; musicQuery = null; }
         if (tiktokQuery) { videoQuery = null; musicQuery = null; }
-        if (asksForVideo && musicQuery && !videoQuery) {
-          videoQuery = musicQuery;
-          musicQuery = null;
-        }
+        if (asksForVideo && musicQuery && !videoQuery) { videoQuery = musicQuery; musicQuery = null; }
         if (videoQuery || tiktokQuery || shotiQuery) musicQuery = null;
 
-        // TTS spoken text
         if (cleanText) {
           send('STATE:SPEAKING');
           const ttsBuffer = await generateTTSBuffer(cleanText);
@@ -1385,7 +1315,6 @@ wss.on('connection', (ws) => {
           if (musicQuery || videoQuery || tiktokQuery || shotiQuery) await new Promise(r => setTimeout(r, 1200));
         }
 
-        // Audio-only music search + stream URL
         if (musicQuery) {
           console.log(`[WS:${cid}] music: "${musicQuery}"`);
           send('STATE:SEARCHING_MUSIC');
@@ -1454,7 +1383,6 @@ wss.on('connection', (ws) => {
     }
   });
 
-  // Keep-alive ping every 20s so long music doesn't drop
   const ping = setInterval(() => {
     if (ws.readyState === ws.OPEN) ws.ping();
     else clearInterval(ping);
