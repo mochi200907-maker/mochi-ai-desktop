@@ -910,11 +910,11 @@
     async function initAudio() {
       audioCtx = new (window.AudioContext || window.webkitAudioContext)();
       try { await audioCtx.resume(); } catch (_) {}
-      micStream = await navigator.mediaDevices.getUserMedia({
+            micStream = await navigator.mediaDevices.getUserMedia({
         audio: {
-          echoCancellation: false,
-          noiseSuppression: false,
-          autoGainControl: false
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
         }
       });
       const source = audioCtx.createMediaStreamSource(micStream);
@@ -937,6 +937,7 @@
     let geminiWs = null;
     let geminiNextStart = 0;
     let playbackGeneration = 0;
+    let activeAudioSources = [];
 
     function connectGeminiLive() {
       const proto = location.protocol === 'https:' ? 'wss' : 'ws';
@@ -1074,15 +1075,17 @@
 
       const now = audioCtx.currentTime;
       const start = Math.max(now + 0.01, geminiNextStart);
-      src.start(start);
+            src.start(start);
       geminiNextStart = start + buf.duration;
 
+      activeAudioSources.push(src);
       src.onended = () => {
+        const idx = activeAudioSources.indexOf(src);
+        if (idx !== -1) activeAudioSources.splice(idx, 1);
         if (audioCtx.currentTime >= geminiNextStart - 0.08 && robotState === 'SPEAKING') {
           robotState = 'IDLE'; currentExpression = 'IDLE'; mouthOpen = 0; mouthTarget = 0;
         }
       };
-    }
 
     function initGeminiLive(source) {
       const SR = audioCtx.sampleRate, TR = 16000;
