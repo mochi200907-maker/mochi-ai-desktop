@@ -988,14 +988,15 @@
         }
 
         // Interruption / cancellation
-        if (msg.toolCancelled) {
+               if (msg.toolCancelled) {
           playbackGeneration++;
           geminiNextStart = 0;
+          activeAudioSources.forEach(src => { try { src.stop(); } catch {} });
+          activeAudioSources = [];
           robotState = 'LISTENING';
           currentExpression = 'IDLE';
           return;
         }
-
         // Media loading
         if (msg.mediaAction) {
           const labels = { music: '🎵 Searching music…', video: '🎬 Searching video…', tiktok: '📱 Searching TikTok…', shoti: '🎀 Fetching shoti…' };
@@ -1033,13 +1034,14 @@
           }
         }
 
-        if (sc.interrupted) {
+              if (sc.interrupted) {
           playbackGeneration++;
           geminiNextStart = 0;
+          activeAudioSources.forEach(src => { try { src.stop(); } catch {} });
+          activeAudioSources = [];
           robotState = 'LISTENING';
           currentExpression = 'IDLE';
         }
-
         if (sc.turnComplete) {
           const delay = Math.max(0, (geminiNextStart - audioCtx.currentTime) * 1000 + 300);
           setTimeout(() => {
