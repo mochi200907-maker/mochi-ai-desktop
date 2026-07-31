@@ -1086,8 +1086,8 @@
         if (idx !== -1) activeAudioSources.splice(idx, 1);
         if (audioCtx.currentTime >= geminiNextStart - 0.08 && robotState === 'SPEAKING') {
           robotState = 'IDLE'; currentExpression = 'IDLE'; mouthOpen = 0; mouthTarget = 0;
-        }
-      };
+        };    // ← dito nagtapos yung callback
+    }   
 
     function initGeminiLive(source) {
       const SR = audioCtx.sampleRate, TR = 16000;
