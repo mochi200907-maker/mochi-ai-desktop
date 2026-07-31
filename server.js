@@ -1023,7 +1023,7 @@ geminiLiveWss.on('connection', (clientWs) => {
         model: 'models/gemini-3.1-flash-live-preview',
         generationConfig: {
           responseModalities: ['AUDIO'],
-          speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Algieba' } } },
+          speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Zephyr' } } },
           temperature: 0.15
         },
         tools: ROBOT_TOOLS,
