@@ -907,15 +907,24 @@
     let smoothedVolume = 0;
     let barHeights = new Array(NUM_BARS).fill(6);
 
-      async function initAudio() {
+          async function initAudio() {
       audioCtx = new (window.AudioContext || window.webkitAudioContext)();
       try { await audioCtx.resume(); } catch (_) {}
       
-      // FIX: Pilitin ang media volume (loudspeaker) imbes na call/earpiece volume sa mobile
+      // FIX 1: audioSession API (Chrome 110+)
       if ('audioSession' in navigator) {
         try { navigator.audioSession.type = 'playback'; } catch (_) {}
       }
       
+      // FIX 2: Android silent audio trick — force media volume bago mag-mic access
+      let silentAudio = null;
+      try {
+        silentAudio = new Audio('data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQQAAAAAAA==');
+        silentAudio.loop = true;
+        silentAudio.volume = 0.001;
+        await silentAudio.play();
+      } catch (_) {}
+
       micStream = await navigator.mediaDevices.getUserMedia({
         audio: {
           echoCancellation: true,
@@ -923,6 +932,17 @@
           autoGainControl: true
         }
       });
+      
+      // FIX 3: Re-apply playback session AFTER mic access (Android switches to call mode dito minsan)
+      if ('audioSession' in navigator) {
+        try { navigator.audioSession.type = 'playback'; } catch (_) {}
+      }
+      
+      // I-stop na yung silent audio, nagawa na ang job nya
+      if (silentAudio) {
+        try { silentAudio.pause(); silentAudio.src = ''; } catch (_) {}
+      }
+
       const source = audioCtx.createMediaStreamSource(micStream);
       analyser = audioCtx.createAnalyser();
       analyser.fftSize = 256;
