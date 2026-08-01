@@ -577,8 +577,8 @@
 
         if (attempt < MAX_SCANS - 1) {
           showTranscript(`🔄 Not found yet, rotating…`);
-          sendBLECommand('LEFT');
-          await new Promise(r => setTimeout(r, 700));
+          sendDirectionalMove('LEFT');          // rotate the robot, not an LED command
+          await new Promise(r => setTimeout(r, 1100));
         }
       }
 
@@ -611,22 +611,107 @@
     let musicPlaying = false;
     let isMediaPlaying = false;
 
+    // Module-level refs so enterVoiceMode can reconnect the mic to the
+    // existing Gemini ScriptProcessor after media playback ends.
+    let geminiProc = null;   // ScriptProcessor (set by initGeminiLive)
+    let micSource  = null;   // current MediaStreamSource (set by initGeminiLive / enterVoiceMode)
+
+    // ── Audio session helpers ─────────────────────────────────────
+    // On Android, echoCancellation:true forces MODE_IN_COMMUNICATION which
+    // locks the hardware volume button to STREAM_VOICE_CALL for the ENTIRE
+    // page — even plain <audio>/<video> elements.
+    //
+    // The ONLY reliable fix is to STOP the mic tracks (which releases
+    // MODE_IN_COMMUNICATION) before media plays, then re-acquire the mic
+    // and reconnect to the Gemini pipeline when media stops.
+    //
+    //   enterMediaMode() → stops mic → Android exits comm mode
+    //                    → <audio>/<video> use STREAM_MUSIC (media volume)
+    //   enterVoiceMode() → restarts mic → Android re-enters comm mode
+    //                    → AudioContext.destination uses STREAM_VOICE_CALL (call volume)
+
+    function enterMediaMode() {
+      console.log('[Audio] → media mode (stop mic, release comm mode)');
+      if ('audioSession' in navigator) {
+        try { navigator.audioSession.type = 'playback'; } catch (_) {}
+      }
+      // Stopping mic tracks is what actually releases MODE_IN_COMMUNICATION.
+      if (micStream) {
+        micStream.getTracks().forEach(t => t.stop());
+        micStream = null;
+      }
+      if (audioCtx && audioCtx.state === 'running') {
+        audioCtx.suspend().catch(() => {});
+      }
+    }
+
+    function enterVoiceMode() {
+      console.log('[Audio] → voice mode (restart mic, restore comm mode)');
+      if ('audioSession' in navigator) {
+        try { navigator.audioSession.type = 'play-and-record'; } catch (_) {}
+      }
+      if (audioCtx && audioCtx.state === 'suspended') {
+        audioCtx.resume().catch(() => {});
+      }
+      // Re-acquire mic only if it was stopped and the Gemini pipeline exists.
+      if (!micStream && audioCtx && geminiProc) {
+        navigator.mediaDevices.getUserMedia({
+          audio: { echoCancellation: true, noiseSuppression: true,
+                   autoGainControl: true, channelCount: 1 }
+        }).then(stream => {
+          micStream = stream;
+          // Disconnect the old (silent) source before connecting the new one.
+          if (micSource) { try { micSource.disconnect(); } catch {} }
+          micSource = audioCtx.createMediaStreamSource(micStream);
+          if (analyser)   micSource.connect(analyser);
+          if (geminiProc) micSource.connect(geminiProc);
+          console.log('[Audio] mic reconnected to Gemini pipeline');
+        }).catch(e => console.warn('[Audio] mic restart failed:', e.message));
+      }
+    }
+
+    // ── Internal helpers (no mode switch) ────────────────────────
+    function _clearMusicAudio() {
+      if (musicAudio) { musicAudio.pause(); musicAudio.src = ''; musicAudio = null; }
+      musicPlaying = false;
+      if (currentExpression === 'MUSIC') currentExpression = 'IDLE';
+    }
+
+    function _clearVideoPlayer() {
+      const modal      = document.getElementById('video-modal');
+      const frame      = document.getElementById('video-frame');
+      const tiktokVid  = document.getElementById('tiktok-video');
+      if (frame)     { frame.src = 'about:blank'; frame.style.aspectRatio = '';
+                       frame.style.width = ''; frame.style.maxHeight = '';
+                       frame.style.display = 'block'; }
+      if (tiktokVid) { tiktokVid.pause(); tiktokVid.removeAttribute('src');
+                       tiktokVid.load(); tiktokVid.style.display = 'none'; }
+      if (modal)     modal.classList.remove('open');
+      musicPlaying = false;
+      if (currentExpression === 'MUSIC') currentExpression = 'IDLE';
+    }
+
+    // ── Public play / stop ────────────────────────────────────────
     function playMusicUrl(title, url) {
-      stopMusic();
+      _clearMusicAudio();   // stop previous music WITHOUT switching mode
       isMediaPlaying = true;
+      enterMediaMode();     // stop mic → releases comm mode → media volume
       musicAudio = new Audio(url);
       musicAudio.playsInline = true;
       musicAudio.preload = 'auto';
-      musicAudio.onended = () => { stopMusic(); setTimeout(() => { isMediaPlaying = false; }, 1500); };
+      musicAudio.onended = () => {
+        _clearMusicAudio(); enterVoiceMode();
+        setTimeout(() => { isMediaPlaying = false; }, 1500);
+      };
       musicAudio.onerror = () => {
         console.warn('Music audio error, code:', musicAudio?.error?.code);
         showError('Music playback error');
-        stopMusic();
+        _clearMusicAudio(); enterVoiceMode();
         setTimeout(() => { isMediaPlaying = false; }, 1500);
       };
       musicAudio.play().catch(err => {
         showError('Music play: ' + err.message);
-        stopMusic();
+        _clearMusicAudio(); enterVoiceMode();
         setTimeout(() => { isMediaPlaying = false; }, 1500);
       });
       musicPlaying = true;
@@ -635,13 +720,8 @@
     }
 
     function stopMusic() {
-      if (musicAudio) {
-        musicAudio.pause();
-        musicAudio.src = '';
-        musicAudio = null;
-      }
-      musicPlaying = false;
-      if (currentExpression === 'MUSIC') currentExpression = 'IDLE';
+      _clearMusicAudio();
+      enterVoiceMode();     // restart mic → restores comm mode → call volume
     }
 
     function youtubeId(url) {
@@ -653,11 +733,12 @@
     }
 
     function playVideoUrl(title, url, provider = 'youtube') {
-      stopMusic();
-      const modal = document.getElementById('video-modal');
-      const frame = document.getElementById('video-frame');
+      _clearMusicAudio();   // stop any music WITHOUT mode switch
+      enterMediaMode();     // stop mic → releases comm mode → media volume
+      const modal      = document.getElementById('video-modal');
+      const frame      = document.getElementById('video-frame');
       const tiktokVideo = document.getElementById('tiktok-video');
-      const label = document.getElementById('video-title');
+      const label      = document.getElementById('video-title');
       if (!modal || !frame || !tiktokVideo) { showError('Video player not ready'); return; }
       const isShortVideo = provider === 'tiktok' || provider === 'shoti';
       if (isShortVideo) {
@@ -706,26 +787,9 @@
     }
 
     function stopVideo() {
-      const modal = document.getElementById('video-modal');
-      const frame = document.getElementById('video-frame');
-      const tiktokVideo = document.getElementById('tiktok-video');
-      if (frame) {
-        frame.src = 'about:blank';
-        frame.style.aspectRatio = '';
-        frame.style.width = '';
-        frame.style.maxHeight = '';
-        frame.style.display = 'block';
-      }
-      if (tiktokVideo) {
-        tiktokVideo.pause();
-        tiktokVideo.removeAttribute('src');
-        tiktokVideo.load();
-        tiktokVideo.style.display = 'none';
-      }
-      if (modal) modal.classList.remove('open');
-      musicPlaying = false;
+      _clearVideoPlayer();
       setTimeout(() => { isMediaPlaying = false; }, 1500);
-      if (currentExpression === 'MUSIC') currentExpression = 'IDLE';
+      enterVoiceMode();     // restart mic → restores comm mode → call volume
     }
 
     document.getElementById('video-stop').addEventListener('click', stopVideo);
@@ -908,63 +972,56 @@
     const waveformBars = Array.from({length: NUM_BARS}, (_, i) => document.getElementById('wb' + (i + 1)));
     let smoothedVolume = 0;
     let barHeights = new Array(NUM_BARS).fill(6);
+    let voiceGain = null;   // gain node for AI voice boost
 
 async function initAudio() {
-      // Detect Android — getUserMedia with WebRTC processing constraints triggers
-      // Android MODE_IN_COMMUNICATION (call mode), hijacking volume to the call channel.
-      // Fix: disable those constraints on Android so it stays in media mode.
       const isAndroid = /android/i.test(navigator.userAgent);
 
-      // 1. Set AudioSession to play-and-record (correct type for mic + playback apps).
-      //    'playback' alone can conflict with mic acquisition on some browsers.
+      // ── Step 1: Open mic with echoCancellation ON ─────────────────
+      // echoCancellation:true pushes Android into MODE_IN_COMMUNICATION
+      // (call mode). This enables hardware AEC so the mic never hears
+      // the speaker — Gemini's auto-VAD can detect real user speech even
+      // while the AI is talking, making interruption reliable.
       if ('audioSession' in navigator) {
-        try {
-          navigator.audioSession.type = 'play-and-record';
-        } catch (_) {}
+        try { navigator.audioSession.type = 'play-and-record'; } catch (_) {}
       }
 
+      micStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          channelCount: 1
+        }
+      });
+
+      // ── Step 2: AudioContext (call mode) ─────────────────────────
       audioCtx = new (window.AudioContext || window.webkitAudioContext)({
         latencyHint: 'interactive'
       });
       try { await audioCtx.resume(); } catch (_) {}
 
-      // 2. On Android: play a silent buffer BEFORE opening the mic.
-      //    This "locks" Android's audio session into STREAM_MUSIC (media volume)
-      //    before getUserMedia can switch it to STREAM_VOICE_CALL (call volume).
-      //    Without this, even with EC disabled, Android may still use call volume.
-      if (isAndroid) {
-        try {
-          const silBuf = audioCtx.createBuffer(1, Math.floor(audioCtx.sampleRate * 0.25), audioCtx.sampleRate);
-          const silSrc = audioCtx.createBufferSource();
-          silSrc.buffer = silBuf;
-          silSrc.connect(audioCtx.destination);
-          silSrc.start();
-          await new Promise(r => setTimeout(r, 200));
-        } catch (_) {}
-      }
-
-      // 3. On Android, disable WebRTC audio-processing constraints.
-      //    echoCancellation/noiseSuppression/autoGainControl force Android into
-      //    MODE_IN_COMMUNICATION, which switches volume control to the call channel.
-      micStream = await navigator.mediaDevices.getUserMedia({
-        audio: isAndroid ? {
-          echoCancellation: false,
-          noiseSuppression: false,
-          autoGainControl: false,
-          channelCount: 1
-        } : {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-          channelCount: 1,
-          sampleRate: 16000
-        }
-      });
-
-      // 4. Re-assert play-and-record after mic is open
       if ('audioSession' in navigator) {
         try { navigator.audioSession.type = 'play-and-record'; } catch (_) {}
       }
+
+      // Output chain: GainNode → DynamicsCompressor → output
+      voiceGain = audioCtx.createGain();
+      voiceGain.gain.value = 1.0;
+      const voiceCompressor = audioCtx.createDynamicsCompressor();
+      voiceCompressor.threshold.value = -24;
+      voiceCompressor.knee.value       = 6;
+      voiceCompressor.ratio.value      = 3;
+      voiceCompressor.attack.value     = 0.003;
+      voiceCompressor.release.value    = 0.1;
+      voiceGain.connect(voiceCompressor);
+
+      // ── Step 3: AI voice → call volume ───────────────────────────
+      // Route AI audio directly through AudioContext.destination so it
+      // plays on the call volume channel on Android (MODE_IN_COMMUNICATION).
+      // Media (music / TikTok / YouTube) stays as plain <audio>/<video>
+      // elements which use media volume — the two channels are now separate.
+      voiceCompressor.connect(audioCtx.destination);
 
       const source = audioCtx.createMediaStreamSource(micStream);
       analyser = audioCtx.createAnalyser();
@@ -990,7 +1047,8 @@ async function initAudio() {
 
     function connectGeminiLive() {
       const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-      geminiWs = new WebSocket(`${proto}://${location.host}/ws/gemini`);
+      const platform = /android/i.test(navigator.userAgent) ? '?platform=android' : '';
+      geminiWs = new WebSocket(`${proto}://${location.host}/ws/gemini${platform}`);
 
       geminiWs.onopen = () => console.log('[GeminiLive] connected');
 
@@ -1124,7 +1182,7 @@ async function initAudio() {
       buf.copyToChannel(f32, 0);
       const src = audioCtx.createBufferSource();
       src.buffer = buf;
-      src.connect(audioCtx.destination);
+      src.connect(voiceGain || audioCtx.destination);
 
       const now = audioCtx.currentTime;
       const start = Math.max(now + 0.01, geminiNextStart);
@@ -1142,31 +1200,50 @@ async function initAudio() {
     }
 
     function initGeminiLive(source) {
+      // Save refs so enterVoiceMode() can reconnect a new mic stream later.
+      micSource = source;
       const SR = audioCtx.sampleRate, TR = 16000;
       const proc = audioCtx.createScriptProcessor(4096, 1, 1);
+      geminiProc = proc;    // expose for mic reconnection
       const sink = audioCtx.createMediaStreamDestination();
       source.connect(proc);
       proc.connect(sink);
 
+      // Android disables browser echo cancellation to avoid call-mode audio
+      // routing. Without AEC the mic picks up the AI speaker output directly.
+      //
+      // DESKTOP  — automatic VAD (server-side): AEC strips echo; Gemini's
+      //   built-in VAD detects real speech and fires sc.interrupted natively.
+      //
+      // ANDROID  — manual VAD (server-side disabled): we send explicit
+      //   activityStart / activityEnd signals so Gemini ONLY interrupts when
+      //   we confirm user speech. Echo can never trigger a false interrupt
+      //   because Gemini's own VAD is off for this connection.
+      const isAndroid = /android/i.test(navigator.userAgent);
+
       let vadReady = false;
 
-      // ── BARGE-IN / ECHO LOOP FIX (BALANCED) ─────────────────────
-      const BARGE_IN_FRAMES   = 3;    // ~280ms sustained speech
-      const BARGE_IN_MULT     = 4.0;  // 4x louder than echo
-      const BARGE_IN_MIN_RMS  = 0.05; // absolute minimum
-      const BARGE_IN_SETTLE   = 600;  // 600ms floor learning
-      const BARGE_IN_COOLDOWN = 1500; // 1.5s cooldown
-      const ECHO_TAIL_MS      = 300;  // 300ms mute after AI stops
-      const VAD_THRESHOLD     = 0.015;
-      const VAD_HANGOVER      = 12;
+      // ── Shared constants ─────────────────────────────────────────
+      const BARGE_IN_FRAMES   = 2;     // desktop: ~185ms sustained to confirm barge-in
+      const BARGE_IN_MULT     = 2.5;   // desktop: voice must be 2.5× the echo floor
+      const BARGE_IN_MIN_RMS  = 0.03;  // desktop: absolute minimum RMS
+      const BARGE_IN_SETTLE   = 300;   // ms after AI starts before barge-in allowed
+      const BARGE_IN_COOLDOWN = 1200;  // ms cooldown between barge-ins
 
-      let noiseFloor     = 0.01;
-      let aiSpeakStart   = 0;
-      let bargeInFrames  = 0;
+      // ── Android manual VAD constants ─────────────────────────────
+      const ANDROID_SPEECH_THRESHOLD = 0.025; // RMS to open activityStart
+      const ANDROID_EOT_FRAMES       = 6;     // ~510ms silence → activityEnd
+      const ANDROID_ECHO_TAIL_MS     = 700;   // ms to suppress after AI stops
+
+      let noiseFloor          = 0.01;
+      let aiSpeakStart        = 0;
+      let bargeInFrames       = 0;
       let bargeInCooldownUntil = 0;
-      let lastBargeInTime = 0;
-      let aiAudioEndTime = 0;
-      let vadHangover    = 0;
+      let lastBargeInTime     = 0;
+      let aiAudioEndTime      = 0;
+      // Android manual VAD state
+      let androidSpeaking     = false;
+      let androidSilenceFrames = 0;
 
       setTimeout(() => { vadReady = true; }, 1500);
 
@@ -1180,53 +1257,129 @@ async function initAudio() {
         const isGeminiSpeaking = audioCtx.currentTime < geminiNextStart;
         const now = Date.now();
 
-        // Track AI transitions
-        if (isGeminiSpeaking && aiSpeakStart === 0) {
+        // aiActive spans the whole AI turn — covers locally scheduled audio
+        // AND the inter-chunk gaps where no audio is buffered but robotState
+        // is still 'SPEAKING'.
+        const aiActive = isGeminiSpeaking || robotState === 'SPEAKING';
+
+        // Track AI turn transitions
+        if (aiActive && aiSpeakStart === 0) {
           aiSpeakStart = now;
           noiseFloor = Math.max(noiseFloor, instantRMS * 0.8);
-          vadHangover = 0;
-        } else if (!isGeminiSpeaking && aiSpeakStart !== 0) {
+          // Reset Android speech state when a new AI turn starts
+          if (isAndroid) { androidSpeaking = false; androidSilenceFrames = 0; }
+        } else if (!aiActive && aiSpeakStart !== 0) {
           aiSpeakStart = 0;
           bargeInFrames = 0;
           aiAudioEndTime = now;
         }
 
         // Noise-floor adaptation
-        if (isGeminiSpeaking) {
-          noiseFloor = noiseFloor * 0.92 + smoothedVolume * 0.08;
-        } else {
-          noiseFloor = Math.max(0.004, noiseFloor * 0.995);
-        }
+        if (aiActive) noiseFloor = noiseFloor * 0.92 + smoothedVolume * 0.08;
+        else          noiseFloor = Math.max(0.004, noiseFloor * 0.995);
 
-        // Barge-in detection
-        const bargeInThreshold = Math.max(BARGE_IN_MIN_RMS, noiseFloor * BARGE_IN_MULT);
+        // Barge-in detection — both desktop and Android.
+        // Android: echoCancellation is OFF (media mode). Echo sits in the mic
+        // so the noise floor ALREADY includes the echo level. We only need
+        // 1.8× — the user's voice adds on top of the echo, creating a clear
+        // spike above the floor. Desktop uses 2.5× with AEC (floor is clean).
+        const ANDROID_BARGE_IN_MULT = 1.8;
+        const effectiveMult = isAndroid ? ANDROID_BARGE_IN_MULT : BARGE_IN_MULT;
+        const bargeInThreshold = Math.max(BARGE_IN_MIN_RMS, noiseFloor * effectiveMult);
         const settledEnough = aiSpeakStart > 0 && (now - aiSpeakStart) > BARGE_IN_SETTLE;
         const aboveThreshold = isGeminiSpeaking && settledEnough && smoothedVolume > bargeInThreshold;
-
         if (aboveThreshold) bargeInFrames = Math.min(bargeInFrames + 1, BARGE_IN_FRAMES + 2);
-        else bargeInFrames = Math.max(0, bargeInFrames - 1);
-
+        else                bargeInFrames = Math.max(0, bargeInFrames - 1);
         const isBargeIn = isGeminiSpeaking
           && bargeInFrames >= BARGE_IN_FRAMES
           && now > bargeInCooldownUntil
           && now > lastBargeInTime + BARGE_IN_COOLDOWN;
 
-        if (!vadReady || isMediaPlaying || !geminiWs || geminiWs.readyState !== WebSocket.OPEN) return;
+        if (!vadReady || !geminiWs || geminiWs.readyState !== WebSocket.OPEN) return;
 
-        // Echo tail gate
-        const inEchoTail = !isGeminiSpeaking && aiAudioEndTime > 0 && (now - aiAudioEndTime < ECHO_TAIL_MS);
-        if (isGeminiSpeaking && !isBargeIn) return;
-        if (inEchoTail && !isBargeIn) return;
+        // ── Resample mic audio ────────────────────────────────────
+        const ratio = SR / TR, outLen = Math.floor(input.length / ratio);
+        const pcm = new Int16Array(outLen);
+        for (let i = 0; i < outLen; i++) {
+          const pos = i * ratio, idx = Math.floor(pos), frac = pos - idx;
+          const s = Math.max(-1, Math.min(1, (input[idx] || 0) + frac * ((input[idx + 1] || 0) - (input[idx] || 0))));
+          pcm[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+        }
 
-        // VAD gate
-        const isSpeech = smoothedVolume > VAD_THRESHOLD;
-        if (isSpeech) vadHangover = VAD_HANGOVER;
-        else if (vadHangover > 0) vadHangover--;
+        // ══════════════════════════════════════════════════════════════
+        // ANDROID — manual VAD (server-side auto-VAD disabled)
+        // Server-side auto-VAD is OFF so echo alone can never trigger an
+        // interrupt. We drive everything with activityStart / activityEnd:
+        //
+        //  • While AI speaks: audio still flows so we can detect barge-in.
+        //    When user's voice exceeds the echo floor we send activityStart —
+        //    this fires START_OF_ACTIVITY_INTERRUPTS on Gemini and we also
+        //    cut the local audio immediately for a snappy feel.
+        //  • While AI is silent (normal turn): manual VAD gates activityStart
+        //    and activityEnd to prevent echo-tail false triggers.
+        // ══════════════════════════════════════════════════════════════
+        if (isAndroid) {
+          // ── Barge-in while AI is speaking ───────────────────────
+          if (aiActive && isBargeIn) {
+            bargeInFrames = 0;
+            bargeInCooldownUntil = now + BARGE_IN_COOLDOWN;
+            lastBargeInTime = now;
+            // Cut local audio immediately for snappy UX
+            playbackGeneration++;
+            geminiNextStart = 0;
+            activeAudioSources.forEach(src => { try { src.stop(); } catch {} });
+            activeAudioSources = [];
+            robotState = 'LISTENING';
+            currentExpression = 'IDLE';
+            // Tell Gemini user is speaking → triggers interrupt
+            if (!androidSpeaking) {
+              androidSpeaking = true;
+              androidSilenceFrames = 0;
+              geminiWs.send(JSON.stringify({ realtimeInput: { activityStart: {} } }));
+              console.log('[Android BargeIn] activityStart — interrupt');
+            }
+          }
 
-        const vadOpen = isSpeech || vadHangover > 0 || isBargeIn;
-        if (!vadOpen) return;
+          // Always send audio while AI is speaking so barge-in can be detected
+          if (aiActive) {
+            geminiWs.send(pcm.buffer);
+            return;
+          }
 
-        // Barge-in confirmed
+          // ── Normal turn-taking VAD (AI is silent) ────────────────
+          // Wait for echo tail to clear before accepting user speech
+          if (aiAudioEndTime > 0 && (now - aiAudioEndTime) < ANDROID_ECHO_TAIL_MS) return;
+
+          if (instantRMS > ANDROID_SPEECH_THRESHOLD) {
+            androidSilenceFrames = 0;
+            if (!androidSpeaking) {
+              androidSpeaking = true;
+              geminiWs.send(JSON.stringify({ realtimeInput: { activityStart: {} } }));
+              if (robotState === 'IDLE') robotState = 'LISTENING';
+              console.log('[Android VAD] activityStart');
+            }
+          } else if (androidSpeaking) {
+            androidSilenceFrames++;
+            if (androidSilenceFrames >= ANDROID_EOT_FRAMES) {
+              androidSpeaking = false;
+              androidSilenceFrames = 0;
+              geminiWs.send(JSON.stringify({ realtimeInput: { activityEnd: {} } }));
+              console.log('[Android VAD] activityEnd');
+            }
+          }
+
+          geminiWs.send(pcm.buffer);
+          return;
+        }
+
+        // ══════════════════════════════════════════════════════════════
+        // DESKTOP — continuous streaming, Gemini auto-VAD
+        // Browser AEC removes speaker/music echo from the mic feed so
+        // Gemini's native VAD only hears real user speech and fires
+        // sc.interrupted when the user talks over the AI.
+        // Local barge-in cuts Mochi's audio immediately for snappy UX
+        // before Gemini's interrupt signal arrives.
+        // ══════════════════════════════════════════════════════════════
         if (isBargeIn) {
           bargeInFrames = 0;
           bargeInCooldownUntil = now + BARGE_IN_COOLDOWN;
@@ -1237,16 +1390,9 @@ async function initAudio() {
           activeAudioSources = [];
           robotState = 'LISTENING';
           currentExpression = 'IDLE';
+          console.log('[BargeIn] local audio cut — Gemini VAD will confirm interrupt');
         }
 
-        // Send to Gemini
-        const ratio = SR / TR, outLen = Math.floor(input.length / ratio);
-        const pcm = new Int16Array(outLen);
-        for (let i = 0; i < outLen; i++) {
-          const pos = i * ratio, idx = Math.floor(pos), frac = pos - idx;
-          const s = Math.max(-1, Math.min(1, (input[idx] || 0) + frac * ((input[idx + 1] || 0) - (input[idx] || 0))));
-          pcm[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-        }
         geminiWs.send(pcm.buffer);
         if (robotState === 'IDLE') robotState = 'LISTENING';
       };
