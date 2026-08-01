@@ -1139,9 +1139,10 @@ async function initAudio() {
         for (let i = 0; i < input.length; i++) sum += input[i] * input[i];
         smoothedVolume = smoothedVolume * 0.7 + Math.sqrt(sum / input.length) * 0.3;
 
-        // ALWAYS stream to Gemini unless local media is playing (prevents feeding video audio back)
-        // We removed geminiMuted so the user can interrupt AI speech anytime.
-        if (!vadReady || isMediaPlaying || !geminiWs || geminiWs.readyState !== WebSocket.OPEN) return;
+        // Mute mic to Gemini while robot is speaking to prevent self-interruption loop.
+        // Echo from speakers gets picked up by mic and sent back, causing Gemini to interrupt itself.
+        const isGeminiSpeaking = audioCtx.currentTime < geminiNextStart;
+        if (!vadReady || isMediaPlaying || isGeminiSpeaking || !geminiWs || geminiWs.readyState !== WebSocket.OPEN) return;
 
         const ratio = SR / TR, outLen = Math.floor(input.length / ratio);
         const pcm = new Int16Array(outLen);
