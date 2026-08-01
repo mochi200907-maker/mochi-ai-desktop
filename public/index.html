@@ -762,6 +762,7 @@
 
        let audioCtx, analyser, micStream;
     let aiVoiceDestination = null;   // NEW: para sa AEC-compatible audio routing
+    let aiOutGain = null;            // FIX: gain+EQ chain para mas malakas/malinaw ang boses kahit naka-call-volume
     document.getElementById('connect-btn').addEventListener('click', async () => {
       localStorage.setItem('mochi_ble_name', bleNameInput.value.trim());
       document.getElementById('start-overlay').style.display = 'none';
@@ -926,13 +927,37 @@
       aiVoiceEl.srcObject = aiVoiceDestination.stream;
       aiVoiceEl.play().catch(() => {});
 
-micStream = await navigator.mediaDevices.getUserMedia({
-  audio: {
-    echoCancellation: true,
-    noiseSuppression: false,
-    autoGainControl: false
-  }
-});
+      // FIX: Kapag naka-on ang echoCancellation sa mic, pinipilit ni Android na i-route
+      // ang LAHAT ng audio output ng tab papunta sa call-volume stream (STREAM_VOICE_CALL),
+      // kaya muffled/mahina pakinggan kahit "media" element ang pinapatugtog. Hindi ito
+      // maaayos ng pure JS (OS-level audio-focus decision), kaya i-compensate na lang:
+      // i-boost ang loudness + linawin ang presence bago pumasok sa loopback element,
+      // habang naka-on pa rin ang AEC para hindi masira ang barge-in.
+      aiOutGain = audioCtx.createGain();
+      aiOutGain.gain.value = 1.8;
+      const aiLowBoost = audioCtx.createBiquadFilter();
+      aiLowBoost.type = 'peaking';
+      aiLowBoost.frequency.value = 700;
+      aiLowBoost.Q.value = 0.8;
+      aiLowBoost.gain.value = 3;
+      const aiPresenceBoost = audioCtx.createBiquadFilter();
+      aiPresenceBoost.type = 'highshelf';
+      aiPresenceBoost.frequency.value = 3000;
+      aiPresenceBoost.gain.value = 6;
+      aiOutGain.connect(aiLowBoost);
+      aiLowBoost.connect(aiPresenceBoost);
+      aiPresenceBoost.connect(aiVoiceDestination);
+
+      micStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          // FIX: pinatay ang NS/AGC — sila yung pinaka-may kontribusyon sa "sobrang
+          // noise-reduced/telepono" na dating ng boses; AEC lang ang kailangan talaga
+          // para gumana ang barge-in.
+          noiseSuppression: false,
+          autoGainControl: false
+        }
+      });
       const source = audioCtx.createMediaStreamSource(micStream);
       analyser = audioCtx.createAnalyser();
       analyser.fftSize = 256;
@@ -1089,7 +1114,7 @@ micStream = await navigator.mediaDevices.getUserMedia({
       buf.copyToChannel(f32, 0);
       const src = audioCtx.createBufferSource();
       src.buffer = buf;
-      src.connect(aiVoiceDestination || audioCtx.destination);
+      src.connect(aiOutGain || aiVoiceDestination || audioCtx.destination);
 
       const now = audioCtx.currentTime;
       const start = Math.max(now + 0.01, geminiNextStart);
