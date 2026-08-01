@@ -268,9 +268,6 @@
     <button class="video-stop" id="video-stop">■ Stop video</button>
   </div>
 
-  <!-- FIX: Hidden audio element para ma-detect ng echo cancellation ang AI voice -->
-  <audio id="ai-voice-out" autoplay playsinline style="display:none;"></audio>
-
   <div id="robot-screen">
     <div id="status-bar">
       <div class="waveform-bar" id="wb1"></div>
@@ -760,10 +757,8 @@
       localStorage.setItem('mochi_ble_name', bleNameInput.value.trim());
     });
 
-       let audioCtx, analyser, micStream;
-    let aiCtx = null;                // FIX: hiwalay na AudioContext para sa AI voice — hindi dapat magkasama sa audioCtx na gumagamit ng mic, para hindi mapilitang mag-call-volume ang playback
-    let aiVoiceDestination = null;   // NEW: para sa AEC-compatible audio routing
-    let aiOutGain = null;            // FIX: gain+EQ chain para mas malakas/malinaw ang boses kahit naka-call-volume
+    let audioCtx, analyser, micStream;
+
     document.getElementById('connect-btn').addEventListener('click', async () => {
       localStorage.setItem('mochi_ble_name', bleNameInput.value.trim());
       document.getElementById('start-overlay').style.display = 'none';
@@ -912,66 +907,42 @@
     let smoothedVolume = 0;
     let barHeights = new Array(NUM_BARS).fill(6);
 
-         async function initAudio() {
+          async function initAudio() {
       audioCtx = new (window.AudioContext || window.webkitAudioContext)();
       try { await audioCtx.resume(); } catch (_) {}
-
-      // FIX: Pilitin ang media volume (loudspeaker) imbes na call/earpiece volume sa mobile
+      
+      // FIX 1: audioSession API (Chrome 110+)
       if ('audioSession' in navigator) {
         try { navigator.audioSession.type = 'playback'; } catch (_) {}
       }
-
-      // FIX: hiwalay na AudioContext ang AI voice playback sa mic-capturing audioCtx.
-      // Kapag iisang context ang gumagawa ng mic input AT ng playback output, itinuturing
-      // ito ni Android bilang "two-way communication" graph kaya napipilitang mag-call-volume
-      // (kaya mahina/muffled). Sa hiwalay na context, dapat sumakay ito sa normal media/
-      // loudspeaker volume — kagaya ng music/video na plain <audio>/<video src> elements.
-      aiCtx = new (window.AudioContext || window.webkitAudioContext)();
-      try { await aiCtx.resume(); } catch (_) {}
-
-      aiVoiceDestination = aiCtx.createMediaStreamDestination();
-      const aiVoiceEl = document.getElementById('ai-voice-out');
-      aiVoiceEl.srcObject = aiVoiceDestination.stream;
-      aiVoiceEl.play().catch(() => {});
-
-      // Loudness chain (gain trim -> low/presence EQ -> compressor -> makeup gain)
-      aiOutGain = aiCtx.createGain();
-      aiOutGain.gain.value = 1.15; // conservative pre-gain — avoid clipping into the EQ/compressor
-      const aiLowBoost = aiCtx.createBiquadFilter();
-      aiLowBoost.type = 'peaking';
-      aiLowBoost.frequency.value = 700;
-      aiLowBoost.Q.value = 0.8;
-      aiLowBoost.gain.value = 3;
-      const aiPresenceBoost = aiCtx.createBiquadFilter();
-      aiPresenceBoost.type = 'highshelf';
-      aiPresenceBoost.frequency.value = 3000;
-      aiPresenceBoost.gain.value = 6;
-      aiOutGain.connect(aiLowBoost);
-      aiLowBoost.connect(aiPresenceBoost);
-
-      const aiCompressor = aiCtx.createDynamicsCompressor();
-      aiCompressor.threshold.value = -20;
-      aiCompressor.knee.value = 12;
-      aiCompressor.ratio.value = 6;
-      aiCompressor.attack.value = 0.003;
-      aiCompressor.release.value = 0.2;
-      const aiMakeupGain = aiCtx.createGain();
-      aiMakeupGain.gain.value = 2.4;
-
-      aiPresenceBoost.connect(aiCompressor);
-      aiCompressor.connect(aiMakeupGain);
-      aiMakeupGain.connect(aiVoiceDestination);
+      
+      // FIX 2: Android silent audio trick — force media volume bago mag-mic access
+      let silentAudio = null;
+      try {
+        silentAudio = new Audio('data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQQAAAAAAA==');
+        silentAudio.loop = true;
+        silentAudio.volume = 0.001;
+        await silentAudio.play();
+      } catch (_) {}
 
       micStream = await navigator.mediaDevices.getUserMedia({
         audio: {
           echoCancellation: true,
-          // FIX: pinatay ang NS/AGC — sila yung pinaka-may kontribusyon sa "sobrang
-          // noise-reduced/telepono" na dating ng boses; AEC lang ang kailangan talaga
-          // para gumana ang barge-in.
-          noiseSuppression: false,
-          autoGainControl: false
+          noiseSuppression: true,
+          autoGainControl: true
         }
       });
+      
+      // FIX 3: Re-apply playback session AFTER mic access (Android switches to call mode dito minsan)
+      if ('audioSession' in navigator) {
+        try { navigator.audioSession.type = 'playback'; } catch (_) {}
+      }
+      
+      // I-stop na yung silent audio, nagawa na ang job nya
+      if (silentAudio) {
+        try { silentAudio.pause(); silentAudio.src = ''; } catch (_) {}
+      }
+
       const source = audioCtx.createMediaStreamSource(micStream);
       analyser = audioCtx.createAnalyser();
       analyser.fftSize = 256;
@@ -1098,7 +1069,7 @@
           currentExpression = 'IDLE';
         }
         if (sc.turnComplete) {
-          const delay = Math.max(0, (geminiNextStart - aiCtx.currentTime) * 1000 + 300);
+          const delay = Math.max(0, (geminiNextStart - audioCtx.currentTime) * 1000 + 300);
           setTimeout(() => {
             if (robotState === 'SPEAKING') {
               robotState = 'IDLE'; currentExpression = 'IDLE'; mouthOpen = 0; mouthTarget = 0;
@@ -1124,13 +1095,13 @@
       const f32 = new Float32Array(i16.length);
       for (let i = 0; i < i16.length; i++) f32[i] = i16[i] / 32768.0;
 
-      const buf = aiCtx.createBuffer(1, f32.length, 24000);
+      const buf = audioCtx.createBuffer(1, f32.length, 24000);
       buf.copyToChannel(f32, 0);
-      const src = aiCtx.createBufferSource();
+      const src = audioCtx.createBufferSource();
       src.buffer = buf;
-      src.connect(aiOutGain || aiVoiceDestination || aiCtx.destination);
+      src.connect(audioCtx.destination);
 
-      const now = aiCtx.currentTime;
+      const now = audioCtx.currentTime;
       const start = Math.max(now + 0.01, geminiNextStart);
             src.start(start);
       geminiNextStart = start + buf.duration;
@@ -1139,7 +1110,7 @@
            src.onended = () => {
         const idx = activeAudioSources.indexOf(src);
         if (idx !== -1) activeAudioSources.splice(idx, 1);
-        if (aiCtx.currentTime >= geminiNextStart - 0.08 && robotState === 'SPEAKING') {
+        if (audioCtx.currentTime >= geminiNextStart - 0.08 && robotState === 'SPEAKING') {
           robotState = 'IDLE'; currentExpression = 'IDLE'; mouthOpen = 0; mouthTarget = 0;
         }
       };    // ← isara ang callback dito
