@@ -1139,10 +1139,9 @@ async function initAudio() {
         for (let i = 0; i < input.length; i++) sum += input[i] * input[i];
         smoothedVolume = smoothedVolume * 0.7 + Math.sqrt(sum / input.length) * 0.3;
 
-        // Mute mic to Gemini while robot is speaking to prevent self-interruption loop.
-        // Echo from speakers gets picked up by mic and sent back, causing Gemini to interrupt itself.
         const isGeminiSpeaking = audioCtx.currentTime < geminiNextStart;
-        if (!vadReady || isMediaPlaying || isGeminiSpeaking || !geminiWs || geminiWs.readyState !== WebSocket.OPEN) return;
+        const userIsShouting = smoothedVolume > 0.05; // barge-in kapag malakas boses
+        if (!vadReady || isMediaPlaying || (isGeminiSpeaking && !userIsShouting) || !geminiWs || geminiWs.readyState !== WebSocket.OPEN) return;
 
         const ratio = SR / TR, outLen = Math.floor(input.length / ratio);
         const pcm = new Int16Array(outLen);
