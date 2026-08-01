@@ -268,6 +268,9 @@
     <button class="video-stop" id="video-stop">■ Stop video</button>
   </div>
 
+  <!-- FIX: Hidden audio element para ma-detect ng echo cancellation ang AI voice -->
+  <audio id="ai-voice-out" autoplay playsinline style="display:none;"></audio>
+
   <div id="robot-screen">
     <div id="status-bar">
       <div class="waveform-bar" id="wb1"></div>
@@ -757,8 +760,8 @@
       localStorage.setItem('mochi_ble_name', bleNameInput.value.trim());
     });
 
-    let audioCtx, analyser, micStream;
-
+       let audioCtx, analyser, micStream;
+    let aiVoiceDestination = null;   // NEW: para sa AEC-compatible audio routing
     document.getElementById('connect-btn').addEventListener('click', async () => {
       localStorage.setItem('mochi_ble_name', bleNameInput.value.trim());
       document.getElementById('start-overlay').style.display = 'none';
@@ -907,15 +910,22 @@
     let smoothedVolume = 0;
     let barHeights = new Array(NUM_BARS).fill(6);
 
-      async function initAudio() {
+         async function initAudio() {
       audioCtx = new (window.AudioContext || window.webkitAudioContext)();
       try { await audioCtx.resume(); } catch (_) {}
-      
+
       // FIX: Pilitin ang media volume (loudspeaker) imbes na call/earpiece volume sa mobile
       if ('audioSession' in navigator) {
         try { navigator.audioSession.type = 'playback'; } catch (_) {}
       }
-      
+
+      // NEW: I-route ang AI voice output sa tunay na <audio> element para ma-detect
+      // ng browser echo cancellation (AEC) bilang "loopback reference"
+      aiVoiceDestination = audioCtx.createMediaStreamDestination();
+      const aiVoiceEl = document.getElementById('ai-voice-out');
+      aiVoiceEl.srcObject = aiVoiceDestination.stream;
+      aiVoiceEl.play().catch(() => {});
+
       micStream = await navigator.mediaDevices.getUserMedia({
         audio: {
           echoCancellation: true,
@@ -1079,7 +1089,7 @@
       buf.copyToChannel(f32, 0);
       const src = audioCtx.createBufferSource();
       src.buffer = buf;
-      src.connect(audioCtx.destination);
+      src.connect(aiVoiceDestination || audioCtx.destination);
 
       const now = audioCtx.currentTime;
       const start = Math.max(now + 0.01, geminiNextStart);
