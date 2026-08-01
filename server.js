@@ -73,9 +73,11 @@ app.get('/', (_req, res) => {
 </html>`);
 });
 
-// Serve robot web UI at /app
-app.get('/app', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
-app.use(express.static('public'));
+// Serve robot web UI at /app — no-cache so phones always get the latest build
+const noCacheHeaders = { 'Cache-Control': 'no-cache, no-store, must-revalidate', Pragma: 'no-cache', Expires: '0' };
+app.get('/', (_req, res, next) => { res.set(noCacheHeaders); next(); });
+app.get('/app', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html'), { headers: noCacheHeaders }));
+app.use(express.static('public', { setHeaders: (res, filePath) => { if (filePath.endsWith('.html')) res.set(noCacheHeaders); } }));
 
 // ── Mostakim Music API ────────────────────────────────────────
 async function searchYouTube(query) {
@@ -680,18 +682,26 @@ const ACTION_MOVE_MAP = {
   look_up: 'LOOK_UP', look_down: 'LOOK_DOWN', look_center: 'LOOK_CENTER'
 };
 
-geminiLiveWss.on('connection', (clientWs) => {
-  const apiKey = process.env.GEMINI_API_KEY;
+geminiLiveWss.on('connection', (clientWs, request) => {
+  // Strip invisible Unicode formatting characters that can sneak in via copy-paste
+  const apiKey = (process.env.GEMINI_API_KEY || '').replace(/[\u200e\u200f\u200b\u200c\u200d\uFEFF]/g, '').trim();
   if (!apiKey) { clientWs.close(1011, 'GEMINI_API_KEY not set'); return; }
 
+  // All clients use Gemini's automatic VAD — it detects speech start/end
+  // natively with no client-side delay. Echo is not an issue because the
+  // client gates audio sending on !aiActive (audio only flows when the AI
+  // is silent), so Gemini's VAD never hears speaker echo on any platform.
+  const reqUrl = new URL(request.url, 'http://localhost');
+  const isAndroidClient = reqUrl.searchParams.get('platform') === 'android';
+
   const cid = Date.now().toString(36);
-  console.log(`[GeminiLive:${cid}] client connected`);
+  console.log(`[GeminiLive:${cid}] client connected (${isAndroidClient ? 'Android/manualVAD' : 'desktop/autoVAD'})`);
 
   const gemWs = new WebSocket(`${GEMINI_LIVE_URL}?key=${apiKey}`);
   let ready = false;
   const audioQueue = [];
 
-   gemWs.on('open', () => {
+  gemWs.on('open', () => {
     gemWs.send(JSON.stringify({
       setup: {
         model: 'models/gemini-3.1-flash-live-preview',
@@ -701,13 +711,18 @@ geminiLiveWss.on('connection', (clientWs) => {
           temperature: 0.15
         },
         realtimeInputConfig: {
-          automaticActivityDetection: {
-            disabled: false,
-            startOfSpeechSensitivity: 'START_SENSITIVITY_HIGH',
-            endOfSpeechSensitivity: 'END_SENSITIVITY_LOW',
-            prefixPaddingMs: 200,
-            silenceDurationMs: 400
-          },
+          // Android: disable server-side VAD — client sends activityStart/activityEnd
+          // signals manually so only confirmed user speech triggers interrupts.
+          // Desktop: automatic VAD with AEC handles echo suppression natively.
+          automaticActivityDetection: isAndroidClient
+            ? { disabled: true }
+            : {
+                disabled: false,
+                startOfSpeechSensitivity: 'START_SENSITIVITY_HIGH',
+                endOfSpeechSensitivity: 'END_SENSITIVITY_LOW',
+                prefixPaddingMs: 200,
+                silenceDurationMs: 400
+              },
           activityHandling: 'START_OF_ACTIVITY_INTERRUPTS',
           turnCoverage: 'TURN_INCLUDES_ALL_INPUT'
         },
@@ -900,7 +915,7 @@ geminiLiveWss.on('connection', (clientWs) => {
 
   clientWs.on('close', () => { console.log(`[GeminiLive:${cid}] client gone`); if (gemWs.readyState < 2) gemWs.close(); });
   clientWs.on('error', err => { console.error(`[GeminiLive:${cid}] client err`, err.message); if (gemWs.readyState < 2) gemWs.close(); });
-  gemWs.on('close', (code) => { console.log(`[GeminiLive:${cid}] Gemini closed ${code}`); if (clientWs.readyState < 2) clientWs.close(1011, 'Gemini closed'); });
+  gemWs.on('close', (code, reason) => { console.log(`[GeminiLive:${cid}] Gemini closed ${code} ${reason?.toString?.() || ''}`); if (clientWs.readyState < 2) clientWs.close(1011, 'Gemini closed'); });
   gemWs.on('error', err => { console.error(`[GeminiLive:${cid}]`, err.message); if (clientWs.readyState < 2) { try { clientWs.send(JSON.stringify({ error: err.message })); } catch {} clientWs.close(1011, err.message); } });
 });
 
