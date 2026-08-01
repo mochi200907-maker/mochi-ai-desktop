@@ -1150,15 +1150,16 @@ async function initAudio() {
 
       let vadReady = false;
 
-      // ── BARGE-IN / ECHO LOOP FIX (BALANCED) ─────────────────────
-      const BARGE_IN_FRAMES   = 3;    // ~280ms sustained speech
-      const BARGE_IN_MULT     = 4.0;  // 4x louder than echo
-      const BARGE_IN_MIN_RMS  = 0.05; // absolute minimum
-      const BARGE_IN_SETTLE   = 600;  // 600ms floor learning
-      const BARGE_IN_COOLDOWN = 1500; // 1.5s cooldown
-      const ECHO_TAIL_MS      = 300;  // 300ms mute after AI stops
-      const VAD_THRESHOLD     = 0.015;
-      const VAD_HANGOVER      = 12;
+      // ── BARGE-IN / ECHO LOOP FIX v3 ─────────────────────────────
+      // Mas malapit sa original pero may anti-loop protection
+      const BARGE_IN_FRAMES   = 2;    // ~186ms sustained speech
+      const BARGE_IN_MULT     = 3.5;  // 3.5x louder than echo
+      const BARGE_IN_MIN_RMS  = 0.04; // absolute minimum
+      const BARGE_IN_SETTLE   = 200;  // 200ms floor learning LANG
+      const BARGE_IN_COOLDOWN = 2000; // 2s cooldown (MAHABA para sure)
+      const ECHO_TAIL_MS      = 400;  // 400ms mute after AI stops
+      const VAD_THRESHOLD     = 0.012;
+      const VAD_HANGOVER      = 15;
 
       let noiseFloor     = 0.01;
       let aiSpeakStart   = 0;
@@ -1183,7 +1184,8 @@ async function initAudio() {
         // Track AI transitions
         if (isGeminiSpeaking && aiSpeakStart === 0) {
           aiSpeakStart = now;
-          noiseFloor = Math.max(noiseFloor, instantRMS * 0.8);
+          // Seed noise floor FAST para hindi naabutan ng echo
+          noiseFloor = Math.max(noiseFloor, instantRMS * 0.9);
           vadHangover = 0;
         } else if (!isGeminiSpeaking && aiSpeakStart !== 0) {
           aiSpeakStart = 0;
@@ -1191,11 +1193,11 @@ async function initAudio() {
           aiAudioEndTime = now;
         }
 
-        // Noise-floor adaptation
+        // Noise-floor adaptation: FAST during AI speech
         if (isGeminiSpeaking) {
-          noiseFloor = noiseFloor * 0.92 + smoothedVolume * 0.08;
+          noiseFloor = noiseFloor * 0.85 + smoothedVolume * 0.15;
         } else {
-          noiseFloor = Math.max(0.004, noiseFloor * 0.995);
+          noiseFloor = Math.max(0.003, noiseFloor * 0.995);
         }
 
         // Barge-in detection
@@ -1213,8 +1215,10 @@ async function initAudio() {
 
         if (!vadReady || isMediaPlaying || !geminiWs || geminiWs.readyState !== WebSocket.OPEN) return;
 
-        // Echo tail gate
+        // Echo tail suppression: 400ms mute pagkatapos magsalita ng AI
         const inEchoTail = !isGeminiSpeaking && aiAudioEndTime > 0 && (now - aiAudioEndTime < ECHO_TAIL_MS);
+
+        // Main gate: block mic habang nagsasalita ang AI, unless barge-in
         if (isGeminiSpeaking && !isBargeIn) return;
         if (inEchoTail && !isBargeIn) return;
 
