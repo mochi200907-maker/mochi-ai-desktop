@@ -907,10 +907,16 @@
     let smoothedVolume = 0;
     let barHeights = new Array(NUM_BARS).fill(6);
 
-    async function initAudio() {
+      async function initAudio() {
       audioCtx = new (window.AudioContext || window.webkitAudioContext)();
       try { await audioCtx.resume(); } catch (_) {}
-            micStream = await navigator.mediaDevices.getUserMedia({
+      
+      // FIX: Pilitin ang media volume (loudspeaker) imbes na call/earpiece volume sa mobile
+      if ('audioSession' in navigator) {
+        try { navigator.audioSession.type = 'playback'; } catch (_) {}
+      }
+      
+      micStream = await navigator.mediaDevices.getUserMedia({
         audio: {
           echoCancellation: true,
           noiseSuppression: true,
@@ -1081,13 +1087,14 @@
       geminiNextStart = start + buf.duration;
 
       activeAudioSources.push(src);
-      src.onended = () => {
+           src.onended = () => {
         const idx = activeAudioSources.indexOf(src);
         if (idx !== -1) activeAudioSources.splice(idx, 1);
         if (audioCtx.currentTime >= geminiNextStart - 0.08 && robotState === 'SPEAKING') {
           robotState = 'IDLE'; currentExpression = 'IDLE'; mouthOpen = 0; mouthTarget = 0;
         }
-      };
+      };    // ← isara ang callback dito
+    }       // ← isara ang function dito
 
     function initGeminiLive(source) {
       const SR = audioCtx.sampleRate, TR = 16000;
