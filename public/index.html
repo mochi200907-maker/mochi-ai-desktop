@@ -1131,6 +1131,11 @@ async function initAudio() {
       proc.connect(sink);
 
       let vadReady = false;
+      // Adaptive noise floor — tracks AI audio bleed-through on Android
+      // (echo cancellation is off on Android to avoid call-mode volume hijack,
+      //  so we measure the bleed-through level dynamically and set barge-in
+      //  threshold well above it — no more echo loop, but real speech still works)
+      let noiseFloor = 0.01;
       setTimeout(() => { vadReady = true; }, 1500);
 
       proc.onaudioprocess = (e) => {
@@ -1140,8 +1145,33 @@ async function initAudio() {
         smoothedVolume = smoothedVolume * 0.7 + Math.sqrt(sum / input.length) * 0.3;
 
         const isGeminiSpeaking = audioCtx.currentTime < geminiNextStart;
-        const userIsShouting = smoothedVolume > 0.05; // barge-in kapag malakas boses
-        if (!vadReady || isMediaPlaying || (isGeminiSpeaking && !userIsShouting) || !geminiWs || geminiWs.readyState !== WebSocket.OPEN) return;
+
+        // While AI is speaking, slowly learn what the bleed-through RMS looks like.
+        // That way the barge-in threshold adapts to the actual speaker volume.
+        if (isGeminiSpeaking) {
+          noiseFloor = noiseFloor * 0.97 + smoothedVolume * 0.03;
+        }
+
+        // Barge-in: user must be at least 2.5× louder than the measured bleed-through,
+        // and above an absolute floor of 0.04 (handles cold-start before floor is learned).
+        const bargeInThreshold = Math.max(0.04, noiseFloor * 2.5);
+        const isBargeIn = isGeminiSpeaking && smoothedVolume > bargeInThreshold;
+
+        if (!vadReady || isMediaPlaying || !geminiWs || geminiWs.readyState !== WebSocket.OPEN) return;
+
+        // Gate mic audio while AI is speaking to break the echo loop.
+        // Only let audio through when a real barge-in is detected.
+        if (isGeminiSpeaking && !isBargeIn) return;
+
+        // Barge-in confirmed — kill AI playback immediately (don't wait for Gemini ACK)
+        if (isBargeIn) {
+          playbackGeneration++;
+          geminiNextStart = 0;
+          activeAudioSources.forEach(src => { try { src.stop(); } catch {} });
+          activeAudioSources = [];
+          robotState = 'LISTENING';
+          currentExpression = 'IDLE';
+        }
 
         const ratio = SR / TR, outLen = Math.floor(input.length / ratio);
         const pcm = new Int16Array(outLen);
@@ -1156,53 +1186,6 @@ async function initAudio() {
 
       connectGeminiLive();
       console.log('[GeminiLive] audio pipeline ready, sampleRate:', SR);
-    }
-
-    // ── TTS fallback ──────────────────────────────────────────────
-    async function playTTS(text) {
-      let played = false;
-      try {
-        const streamUrl = '/api/tts/stream?text=' + encodeURIComponent(text);
-        if (audioCtx && audioCtx.state === 'suspended') await audioCtx.resume();
-        await new Promise((resolve, reject) => {
-          const ttsEl = new Audio();
-          ttsEl.playsInline = true;
-          ttsEl.preload = 'auto';
-          try {
-            const ttsSrc = audioCtx.createMediaElementSource(ttsEl);
-            const ttsGain = audioCtx.createGain();
-            ttsAnalyser = audioCtx.createAnalyser();
-            ttsAnalyser.fftSize = 256;
-            ttsAnalyser.smoothingTimeConstant = 0.4;
-            ttsSrc.connect(ttsAnalyser);
-            ttsAnalyser.connect(ttsGain);
-            ttsGain.connect(audioCtx.destination);
-          } catch (routeErr) {
-            console.warn('AudioContext routing skipped:', routeErr.message);
-            ttsAnalyser = null;
-          }
-          ttsEl.onended = () => { mouthOpen = 0; mouthTarget = 0; ttsAnalyser = null; resolve(); };
-          ttsEl.onerror = (e) => { ttsAnalyser = null; reject(e); };
-          ttsEl.src = streamUrl;
-          ttsEl.play().catch(reject);
-        });
-        played = true;
-      } catch (err) {
-        console.warn('Edge TTS failed, using Web Speech:', err.message);
-      }
-      if (!played) {
-        await new Promise(resolve => {
-          window.speechSynthesis.cancel();
-          const utter = new SpeechSynthesisUtterance(text);
-          utter.rate = 1.05; utter.pitch = 1.1;
-          const voices = window.speechSynthesis.getVoices();
-          const pick = voices.find(v => v.lang.startsWith('en') && v.name.toLowerCase().includes('female'))
-                    || voices.find(v => v.lang.startsWith('en')) || voices[0];
-          if (pick) utter.voice = pick;
-          utter.onend = resolve; utter.onerror = resolve;
-          window.speechSynthesis.speak(utter);
-        });
-      }
     }
 
     // ── MOUTH ANIMATION ───────────────────────────────────────────
