@@ -614,6 +614,7 @@
       stopMusic();
       isMediaPlaying = true;
       musicAudio = new Audio(url);
+      musicAudio.playsInline = true;
       musicAudio.preload = 'auto';
       musicAudio.onended = () => { stopMusic(); setTimeout(() => { isMediaPlaying = false; }, 1500); };
       musicAudio.onerror = () => {
@@ -908,11 +909,16 @@
     let barHeights = new Array(NUM_BARS).fill(6);
 
 async function initAudio() {
-      // 1. I-set ang AudioSession mode bago mag-stream (gumagana sa Safari/Chrome mobile)
+      // Detect Android — getUserMedia with WebRTC processing constraints triggers
+      // Android MODE_IN_COMMUNICATION (call mode), hijacking volume to the call channel.
+      // Fix: disable those constraints on Android so it stays in media mode.
+      const isAndroid = /android/i.test(navigator.userAgent);
+
+      // 1. Set AudioSession to play-and-record (correct type for mic + playback apps).
+      //    'playback' alone can conflict with mic acquisition on some browsers.
       if ('audioSession' in navigator) {
         try {
-          // 'playback' para piliting gamitin ang Media Volume channel
-          navigator.audioSession.type = 'playback';
+          navigator.audioSession.type = 'play-and-record';
         } catch (_) {}
       }
 
@@ -921,9 +927,16 @@ async function initAudio() {
       });
       try { await audioCtx.resume(); } catch (_) {}
 
-      // 2. I-request ang mic gamit ang audio constraints na umiiwas sa HFP / Call Mode
+      // 2. On Android, disable WebRTC audio-processing constraints.
+      //    echoCancellation/noiseSuppression/autoGainControl force Android into
+      //    MODE_IN_COMMUNICATION, which switches volume control to the call channel.
       micStream = await navigator.mediaDevices.getUserMedia({
-        audio: {
+        audio: isAndroid ? {
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false,
+          channelCount: 1
+        } : {
           echoCancellation: true,
           noiseSuppression: true,
           autoGainControl: true,
@@ -932,9 +945,9 @@ async function initAudio() {
         }
       });
 
-      // 3. I-re-assert ang playback session pagkabukas ng mic
+      // 3. Re-assert play-and-record after mic is open
       if ('audioSession' in navigator) {
-        try { navigator.audioSession.type = 'playback'; } catch (_) {}
+        try { navigator.audioSession.type = 'play-and-record'; } catch (_) {}
       }
 
       const source = audioCtx.createMediaStreamSource(micStream);
@@ -1153,6 +1166,7 @@ async function initAudio() {
         if (audioCtx && audioCtx.state === 'suspended') await audioCtx.resume();
         await new Promise((resolve, reject) => {
           const ttsEl = new Audio();
+          ttsEl.playsInline = true;
           ttsEl.preload = 'auto';
           try {
             const ttsSrc = audioCtx.createMediaElementSource(ttsEl);
