@@ -907,7 +907,7 @@
     let smoothedVolume = 0;
     let barHeights = new Array(NUM_BARS).fill(6);
 
-          async function initAudio() {
+    async function initAudio() {
       audioCtx = new (window.AudioContext || window.webkitAudioContext)();
       try { await audioCtx.resume(); } catch (_) {}
       
@@ -915,15 +915,16 @@
       if ('audioSession' in navigator) {
         try { navigator.audioSession.type = 'playback'; } catch (_) {}
       }
-      
-      // FIX 2: Android silent audio trick — force media volume bago mag-mic access
-      let silentAudio = null;
-      try {
-        silentAudio = new Audio('data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQQAAAAAAA==');
-        silentAudio.loop = true;
-        silentAudio.volume = 0.001;
-        await silentAudio.play();
-      } catch (_) {}
+
+      // FIX 2: Force sink to default speaker bago mag-mic (Chrome 110+)
+      if ('setSinkId' in AudioContext.prototype) {
+        try {
+          await audioCtx.setSinkId('default');
+          console.log('[Audio] setSinkId -> default speaker');
+        } catch (e) {
+          console.warn('[Audio] setSinkId failed:', e);
+        }
+      }
 
       micStream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -932,15 +933,13 @@
           autoGainControl: true
         }
       });
-      
-      // FIX 3: Re-apply playback session AFTER mic access (Android switches to call mode dito minsan)
+
+      // FIX 3: Re-apply playback session AFTER mic access (Android nag-o-overwrite dito)
       if ('audioSession' in navigator) {
-        try { navigator.audioSession.type = 'playback'; } catch (_) {}
-      }
-      
-      // I-stop na yung silent audio, nagawa na ang job nya
-      if (silentAudio) {
-        try { silentAudio.pause(); silentAudio.src = ''; } catch (_) {}
+        try { 
+          navigator.audioSession.type = 'playback'; 
+          console.log('[Audio] Re-applied playback session after mic');
+        } catch (_) {}
       }
 
       const source = audioCtx.createMediaStreamSource(micStream);
@@ -950,7 +949,6 @@
       source.connect(analyser);
       initGeminiLive(source);
     }
-
     function getRMS() {
       const buf = new Float32Array(analyser.fftSize);
       analyser.getFloatTimeDomainData(buf);
@@ -1086,7 +1084,7 @@
       geminiWs.onerror = (e) => console.error('[GeminiLive] error', e);
     }
 
-    function _playGeminiChunk(b64, gen) {
+      function _playGeminiChunk(b64, gen) {
       if (gen !== playbackGeneration) return;
       const raw = atob(b64);
       const i16 = new Int16Array(raw.length / 2);
@@ -1099,22 +1097,36 @@
       buf.copyToChannel(f32, 0);
       const src = audioCtx.createBufferSource();
       src.buffer = buf;
-      src.connect(audioCtx.destination);
+
+      // WORKAROUND: I-route sa HTMLAudioElement imbes na diretso sa audioCtx.destination
+      // Para Android Chrome ay media volume imbes na call volume
+      if (!_audioStreamDest) {
+        _audioStreamDest = audioCtx.createMediaStreamDestination();
+      }
+      if (!_audioEl) {
+        _audioEl = document.createElement('audio');
+        _audioEl.autoplay = true;
+        _audioEl.playsInline = true;
+        _audioEl.style.display = 'none';
+        document.body.appendChild(_audioEl);
+      }
+      _audioEl.srcObject = _audioStreamDest.stream;
+      src.connect(_audioStreamDest);
 
       const now = audioCtx.currentTime;
       const start = Math.max(now + 0.01, geminiNextStart);
-            src.start(start);
+      src.start(start);
       geminiNextStart = start + buf.duration;
 
       activeAudioSources.push(src);
-           src.onended = () => {
+      src.onended = () => {
         const idx = activeAudioSources.indexOf(src);
         if (idx !== -1) activeAudioSources.splice(idx, 1);
         if (audioCtx.currentTime >= geminiNextStart - 0.08 && robotState === 'SPEAKING') {
           robotState = 'IDLE'; currentExpression = 'IDLE'; mouthOpen = 0; mouthTarget = 0;
         }
-      };    // ← isara ang callback dito
-    }       // ← isara ang function dito
+      };
+    }    // ← isara ang function dito
 
     function initGeminiLive(source) {
       const SR = audioCtx.sampleRate, TR = 16000;
