@@ -907,27 +907,36 @@
     let smoothedVolume = 0;
     let barHeights = new Array(NUM_BARS).fill(6);
 
-    async function initAudio() {
-      // FIX 1: Pilitin ang media/playback session BAGO mag-AudioContext
+async function initAudio() {
+      // 1. I-set ang AudioSession mode bago mag-stream (gumagana sa Safari/Chrome mobile)
       if ('audioSession' in navigator) {
-        try { navigator.audioSession.type = 'playback'; } catch (_) {}
+        try {
+          // 'playback' para piliting gamitin ang Media Volume channel
+          navigator.audioSession.type = 'playback';
+        } catch (_) {}
       }
 
-      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)({
+        latencyHint: 'interactive'
+      });
       try { await audioCtx.resume(); } catch (_) {}
 
-      // FIX 2: Silent audio keep-alive para hindi mag-switch sa call mode
-      window._mochiSilent = new Audio('data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA');
-      window._mochiSilent.loop = true;
-      window._mochiSilent.play().catch(() => {});
-
+      // 2. I-request ang mic gamit ang audio constraints na umiiwas sa HFP / Call Mode
       micStream = await navigator.mediaDevices.getUserMedia({
         audio: {
           echoCancellation: true,
           noiseSuppression: true,
-          autoGainControl: true
+          autoGainControl: true,
+          channelCount: 1,
+          sampleRate: 16000
         }
       });
+
+      // 3. I-re-assert ang playback session pagkabukas ng mic
+      if ('audioSession' in navigator) {
+        try { navigator.audioSession.type = 'playback'; } catch (_) {}
+      }
+
       const source = audioCtx.createMediaStreamSource(micStream);
       analyser = audioCtx.createAnalyser();
       analyser.fftSize = 256;
