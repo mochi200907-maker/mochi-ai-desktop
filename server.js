@@ -691,7 +691,7 @@ geminiLiveWss.on('connection', (clientWs) => {
   let ready = false;
   const audioQueue = [];
 
-  gemWs.on('open', () => {
+   gemWs.on('open', () => {
     gemWs.send(JSON.stringify({
       setup: {
         model: 'models/gemini-3.1-flash-live-preview',
@@ -699,6 +699,17 @@ geminiLiveWss.on('connection', (clientWs) => {
           responseModalities: ['AUDIO'],
           speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Achird' } } },
           temperature: 0.15
+        },
+        realtimeInputConfig: {
+          automaticActivityDetection: {
+            disabled: false,
+            startOfSpeechSensitivity: 'START_SENSITIVITY_HIGH',
+            endOfSpeechSensitivity: 'END_SENSITIVITY_LOW',
+            prefixPaddingMs: 200,
+            silenceDurationMs: 400
+          },
+          activityHandling: 'START_OF_ACTIVITY_INTERRUPTS',
+          turnCoverage: 'TURN_INCLUDES_ALL_INPUT'
         },
         tools: ROBOT_TOOLS,
         systemInstruction: { parts: [{ text: GEMINI_LIVE_SYSTEM }] }
