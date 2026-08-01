@@ -934,7 +934,7 @@
       // i-boost ang loudness + linawin ang presence bago pumasok sa loopback element,
       // habang naka-on pa rin ang AEC para hindi masira ang barge-in.
       aiOutGain = audioCtx.createGain();
-      aiOutGain.gain.value = 1.8;
+      aiOutGain.gain.value = 1.15; // conservative pre-gain — avoid clipping into the EQ/compressor
       const aiLowBoost = audioCtx.createBiquadFilter();
       aiLowBoost.type = 'peaking';
       aiLowBoost.frequency.value = 700;
@@ -946,7 +946,23 @@
       aiPresenceBoost.gain.value = 6;
       aiOutGain.connect(aiLowBoost);
       aiLowBoost.connect(aiPresenceBoost);
-      aiPresenceBoost.connect(aiVoiceDestination);
+
+      // FIX: dynamics compressor + makeup gain — "loudness maximizer" chain.
+      // Ito ang tamang paraan para talagang lumakas ang tunog nang hindi nagcli-clip
+      // (clipping ang dahilan kung bakit humina/nasira ang sound sa flat 1.8x gain dati —
+      // nasa-limit/na-attenuate pa ng Android's sariling call-mode processing).
+      const aiCompressor = audioCtx.createDynamicsCompressor();
+      aiCompressor.threshold.value = -20;
+      aiCompressor.knee.value = 12;
+      aiCompressor.ratio.value = 6;
+      aiCompressor.attack.value = 0.003;
+      aiCompressor.release.value = 0.2;
+      const aiMakeupGain = audioCtx.createGain();
+      aiMakeupGain.gain.value = 2.4;
+
+      aiPresenceBoost.connect(aiCompressor);
+      aiCompressor.connect(aiMakeupGain);
+      aiMakeupGain.connect(aiVoiceDestination);
 
       micStream = await navigator.mediaDevices.getUserMedia({
         audio: {
