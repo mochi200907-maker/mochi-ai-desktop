@@ -911,11 +911,20 @@
       audioCtx = new (window.AudioContext || window.webkitAudioContext)();
       try { await audioCtx.resume(); } catch (_) {}
       
-      // FIX: Pilitin ang media volume (loudspeaker) imbes na call/earpiece volume sa mobile
+    async function initAudio() {
+      // FIX 1: Pilitin ang media/playback session BAGO mag-AudioContext
       if ('audioSession' in navigator) {
         try { navigator.audioSession.type = 'playback'; } catch (_) {}
       }
-      
+
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      try { await audioCtx.resume(); } catch (_) {}
+
+      // FIX 2: Silent audio keep-alive para hindi mag-switch sa call mode
+      window._mochiSilent = new Audio('data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA');
+      window._mochiSilent.loop = true;
+      window._mochiSilent.play().catch(() => {});
+
       micStream = await navigator.mediaDevices.getUserMedia({
         audio: {
           echoCancellation: true,
