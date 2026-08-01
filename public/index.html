@@ -1036,114 +1036,7 @@ async function initAudio() {
         }
 
         // Interruption / cancellation
-                       if (msg.toolCancelled) {
-          playbackGeneration++;
-          geminiNextStart = 0;
-          activeAudioSources.forEach(src => { try { src.stop(); } catch {} });
-          activeAudioSources = [];
-          robotState = 'LISTENING';
-          currentExpression = 'IDLE';
-          bargeInCooldownUntil = audioCtx.currentTime + 1.2;
-          noiseFloor = noiseFloor * 0.4;
-          return;
-        }
-        // Media loading
-        if (msg.mediaAction) {
-          const labels = { music: '🎵 Searching music…', video: '🎬 Searching video…', tiktok: '📱 Searching TikTok…', shoti: '🎀 Fetching shoti…' };
-          showTranscript(labels[msg.mediaAction.type] || '🔍 Loading…');
-          return;
-        }
-
-        // Media ready
-        if (msg.mediaReady) {
-          const { type, url, title, provider } = msg.mediaReady;
-          if (!url) { showError('Media not found'); return; }
-          if (type === 'music') playMusicUrl(title || 'Music', url);
-          else playVideoUrl(title || 'Video', url, provider || type);
-          return;
-        }
-
-        const sc = msg.serverContent;
-        if (!sc) return;
-
-        // Log user speech to console only — NOT on screen
-        if (sc.inputTranscription?.text) {
-          const t = sc.inputTranscription.text.trim();
-          if (t) { console.log('[User]', t); robotState = 'THINKING'; }
-        }
-
-        if (sc.modelTurn?.parts) {
-          for (const part of sc.modelTurn.parts) {
-            if (part.inlineData?.mimeType?.startsWith('audio/pcm')) {
-              robotState = 'SPEAKING';
-              _playGeminiChunk(part.inlineData.data, playbackGeneration);
-            }
-            if (typeof part.text === 'string') {
-              console.log('[Gemini]', part.text);
-            }
-          }
-        }
-
-        if (sc.interrupted) {
-          playbackGeneration++;
-          geminiNextStart = 0;
-          activeAudioSources.forEach(src => { try { src.stop(); } catch {} });
-          activeAudioSources = [];
-          robotState = 'LISTENING';
-          currentExpression = 'IDLE';
-          bargeInCooldownUntil = audioCtx.currentTime + 1.2;
-          noiseFloor = noiseFloor * 0.4;
-        }
-        if (sc.turnComplete) {
-          const currentGen = playbackGeneration;
-          const delay = Math.max(0, (geminiNextStart - audioCtx.currentTime) * 1000 + 300);
-          setTimeout(() => {
-            if (playbackGeneration === currentGen && robotState === 'SPEAKING') {
-              robotState = 'IDLE'; currentExpression = 'IDLE'; mouthOpen = 0; mouthTarget = 0;
-            }
-          }, delay);
-        }
-      };
-
-      geminiWs.onclose = ({ code, reason }) => {
-        console.log('[GeminiLive] closed', code, reason?.toString?.() ?? '');
-        robotState = 'IDLE'; geminiWs = null;
-        setTimeout(connectGeminiLive, 3000);
-      };
-      geminiWs.onerror = (e) => console.error('[GeminiLive] error', e);
-    }
-
-    function _playGeminiChunk(b64, gen) {
-      if (gen !== playbackGeneration) return;
-      const raw = atob(b64);
-      const i16 = new Int16Array(raw.length / 2);
-      for (let i = 0; i < i16.length; i++)
-        i16[i] = (raw.charCodeAt(i * 2) & 0xff) | ((raw.charCodeAt(i * 2 + 1) & 0xff) << 8);
-      const f32 = new Float32Array(i16.length);
-      for (let i = 0; i < i16.length; i++) f32[i] = i16[i] / 32768.0;
-
-      const buf = audioCtx.createBuffer(1, f32.length, 24000);
-      buf.copyToChannel(f32, 0);
-      const src = audioCtx.createBufferSource();
-      src.buffer = buf;
-      src.connect(audioCtx.destination);
-
-      const now = audioCtx.currentTime;
-      const start = Math.max(now + 0.01, geminiNextStart);
-            src.start(start);
-      geminiNextStart = start + buf.duration;
-
-      activeAudioSources.push(src);
-           src.onended = () => {
-        const idx = activeAudioSources.indexOf(src);
-        if (idx !== -1) activeAudioSources.splice(idx, 1);
-        if (audioCtx.currentTime >= geminiNextStart - 0.08 && robotState === 'SPEAKING') {
-          robotState = 'IDLE'; currentExpression = 'IDLE'; mouthOpen = 0; mouthTarget = 0;
-        }
-      };    // ← isara ang callback dito
-    }       // ← isara ang function dito
-
-       function initGeminiLive(source) {
+            function initGeminiLive(source) {
       const SR = audioCtx.sampleRate, TR = 16000;
       const proc = audioCtx.createScriptProcessor(4096, 1, 1);
       const sink = audioCtx.createMediaStreamDestination();
@@ -1152,15 +1045,15 @@ async function initAudio() {
 
       let vadReady = false;
 
-      // ── FIXED BARGE-IN / ECHO LOOP PREVENTION ───────────────────
-      const BARGE_IN_FRAMES   = 5;    // ~470ms sustained speech required
-      const BARGE_IN_MULT     = 5.5;  // must be 5.5x louder than echo floor
-      const BARGE_IN_MIN_RMS  = 0.08; // absolute minimum
-      const BARGE_IN_SETTLE   = 1000; // 1s floor learning before barge-in allowed
-      const BARGE_IN_COOLDOWN = 2500; // 2.5s cooldown after barge-in
-      const ECHO_TAIL_MS      = 350;  // mute mic for 350ms after AI stops
-      const VAD_THRESHOLD     = 0.018;
-      const VAD_HANGOVER      = 20;   // ~1.8s at 93ms/frame
+      // ── BARGE-IN / ECHO LOOP FIX (BALANCED) ─────────────────────
+      const BARGE_IN_FRAMES   = 3;    // ~280ms sustained speech
+      const BARGE_IN_MULT     = 4.0;  // 4x louder than echo (was 3.5, now 4.0)
+      const BARGE_IN_MIN_RMS  = 0.05; // absolute minimum (was 0.08, bumalik sa 0.05)
+      const BARGE_IN_SETTLE   = 600;  // 600ms floor learning
+      const BARGE_IN_COOLDOWN = 1500; // 1.5s cooldown
+      const ECHO_TAIL_MS      = 300;  // 300ms mute after AI stops
+      const VAD_THRESHOLD     = 0.015;
+      const VAD_HANGOVER      = 12;
 
       let noiseFloor     = 0.01;
       let aiSpeakStart   = 0;
@@ -1182,7 +1075,7 @@ async function initAudio() {
         const isGeminiSpeaking = audioCtx.currentTime < geminiNextStart;
         const now = Date.now();
 
-        // Track AI speaking transitions
+        // Track AI transitions
         if (isGeminiSpeaking && aiSpeakStart === 0) {
           aiSpeakStart = now;
           noiseFloor = Math.max(noiseFloor, instantRMS * 0.8);
@@ -1193,7 +1086,7 @@ async function initAudio() {
           aiAudioEndTime = now;
         }
 
-        // Noise-floor adaptation: slower = more stable
+        // Noise-floor adaptation
         if (isGeminiSpeaking) {
           noiseFloor = noiseFloor * 0.92 + smoothedVolume * 0.08;
         } else {
@@ -1202,11 +1095,11 @@ async function initAudio() {
 
         // Barge-in detection
         const bargeInThreshold = Math.max(BARGE_IN_MIN_RMS, noiseFloor * BARGE_IN_MULT);
-        const settledEnough    = aiSpeakStart > 0 && (now - aiSpeakStart) > BARGE_IN_SETTLE;
-        const aboveThreshold   = isGeminiSpeaking && settledEnough && smoothedVolume > bargeInThreshold;
+        const settledEnough = aiSpeakStart > 0 && (now - aiSpeakStart) > BARGE_IN_SETTLE;
+        const aboveThreshold = isGeminiSpeaking && settledEnough && smoothedVolume > bargeInThreshold;
 
         if (aboveThreshold) bargeInFrames = Math.min(bargeInFrames + 1, BARGE_IN_FRAMES + 2);
-        else                 bargeInFrames = Math.max(0, bargeInFrames - 1);
+        else bargeInFrames = Math.max(0, bargeInFrames - 1);
 
         const isBargeIn = isGeminiSpeaking
           && bargeInFrames >= BARGE_IN_FRAMES
@@ -1215,14 +1108,12 @@ async function initAudio() {
 
         if (!vadReady || isMediaPlaying || !geminiWs || geminiWs.readyState !== WebSocket.OPEN) return;
 
-        // Echo tail suppression: wag mag-send ng audio agad pagkatapos magsalita ng AI
+        // Echo tail gate
         const inEchoTail = !isGeminiSpeaking && aiAudioEndTime > 0 && (now - aiAudioEndTime < ECHO_TAIL_MS);
-
-        // Main gate: block mic while AI is speaking unless real barge-in
         if (isGeminiSpeaking && !isBargeIn) return;
         if (inEchoTail && !isBargeIn) return;
 
-        // VAD gate: only forward audio that looks like actual speech
+        // VAD gate
         const isSpeech = smoothedVolume > VAD_THRESHOLD;
         if (isSpeech) vadHangover = VAD_HANGOVER;
         else if (vadHangover > 0) vadHangover--;
@@ -1230,7 +1121,7 @@ async function initAudio() {
         const vadOpen = isSpeech || vadHangover > 0 || isBargeIn;
         if (!vadOpen) return;
 
-        // Barge-in confirmed — stop local playback
+        // Barge-in confirmed
         if (isBargeIn) {
           bargeInFrames = 0;
           bargeInCooldownUntil = now + BARGE_IN_COOLDOWN;
@@ -1243,7 +1134,7 @@ async function initAudio() {
           currentExpression = 'IDLE';
         }
 
-        // Downsample to 16kHz and send to Gemini
+        // Send to Gemini
         const ratio = SR / TR, outLen = Math.floor(input.length / ratio);
         const pcm = new Int16Array(outLen);
         for (let i = 0; i < outLen; i++) {
