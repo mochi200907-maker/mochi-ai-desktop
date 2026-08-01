@@ -907,10 +907,6 @@
     let smoothedVolume = 0;
     let barHeights = new Array(NUM_BARS).fill(6);
 
-      async function initAudio() {
-      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      try { await audioCtx.resume(); } catch (_) {}
-      
     async function initAudio() {
       // FIX 1: Pilitin ang media/playback session BAGO mag-AudioContext
       if ('audioSession' in navigator) {
