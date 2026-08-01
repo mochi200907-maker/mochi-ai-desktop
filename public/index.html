@@ -614,6 +614,7 @@
       stopMusic();
       isMediaPlaying = true;
       musicAudio = new Audio(url);
+      musicAudio.playsInline = true;
       musicAudio.preload = 'auto';
       musicAudio.onended = () => { stopMusic(); setTimeout(() => { isMediaPlaying = false; }, 1500); };
       musicAudio.onerror = () => {
@@ -907,16 +908,48 @@
     let smoothedVolume = 0;
     let barHeights = new Array(NUM_BARS).fill(6);
 
-    async function initAudio() {
-      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+async function initAudio() {
+      // Detect Android — getUserMedia with WebRTC processing constraints triggers
+      // Android MODE_IN_COMMUNICATION (call mode), hijacking volume to the call channel.
+      // Fix: disable those constraints on Android so it stays in media mode.
+      const isAndroid = /android/i.test(navigator.userAgent);
+
+      // 1. Set AudioSession to play-and-record (correct type for mic + playback apps).
+      //    'playback' alone can conflict with mic acquisition on some browsers.
+      if ('audioSession' in navigator) {
+        try {
+          navigator.audioSession.type = 'play-and-record';
+        } catch (_) {}
+      }
+
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)({
+        latencyHint: 'interactive'
+      });
       try { await audioCtx.resume(); } catch (_) {}
-            micStream = await navigator.mediaDevices.getUserMedia({
-        audio: {
+
+      // 2. On Android, disable WebRTC audio-processing constraints.
+      //    echoCancellation/noiseSuppression/autoGainControl force Android into
+      //    MODE_IN_COMMUNICATION, which switches volume control to the call channel.
+      micStream = await navigator.mediaDevices.getUserMedia({
+        audio: isAndroid ? {
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false,
+          channelCount: 1
+        } : {
           echoCancellation: true,
           noiseSuppression: true,
-          autoGainControl: true
+          autoGainControl: true,
+          channelCount: 1,
+          sampleRate: 16000
         }
       });
+
+      // 3. Re-assert play-and-record after mic is open
+      if ('audioSession' in navigator) {
+        try { navigator.audioSession.type = 'play-and-record'; } catch (_) {}
+      }
+
       const source = audioCtx.createMediaStreamSource(micStream);
       analyser = audioCtx.createAnalyser();
       analyser.fftSize = 256;
@@ -1098,6 +1131,24 @@
       proc.connect(sink);
 
       let vadReady = false;
+
+      // ── Android barge-in / echo-loop fix ────────────────────────
+      // Echo cancellation is OFF on Android to avoid call-mode volume hijack,
+      // so the mic picks up the speaker output (bleed-through). We must:
+      //   1. Learn the bleed-through level quickly (fast noise-floor adaptation).
+      //   2. Wait for the floor to settle before allowing barge-in (settling delay).
+      //   3. Require sustained loud speech across multiple frames (frame debounce).
+      //   4. Enforce a cooldown after a barge-in so we don't immediately re-trigger.
+      let noiseFloor     = 0.01;
+      let aiSpeakStart   = 0;      // timestamp when AI started speaking (0 = silent)
+      let bargeInFrames  = 0;      // consecutive frames above threshold
+      let bargeInCooldownUntil = 0; // ms timestamp: barge-in blocked until this time
+      const BARGE_IN_FRAMES   = 3;   // ~280 ms of sustained speech needed at ~93 ms/frame
+      const BARGE_IN_MULT     = 3.5; // user must be 3.5× louder than bleed-through floor
+      const BARGE_IN_MIN_RMS  = 0.05; // absolute minimum — handles cold-start
+      const BARGE_IN_SETTLE   = 600;  // ms to wait after AI starts speaking (floor learning)
+      const BARGE_IN_COOLDOWN = 1500; // ms cooldown after successful barge-in
+
       setTimeout(() => { vadReady = true; }, 1500);
 
       proc.onaudioprocess = (e) => {
@@ -1106,9 +1157,56 @@
         for (let i = 0; i < input.length; i++) sum += input[i] * input[i];
         smoothedVolume = smoothedVolume * 0.7 + Math.sqrt(sum / input.length) * 0.3;
 
-        // ALWAYS stream to Gemini unless local media is playing (prevents feeding video audio back)
-        // We removed geminiMuted so the user can interrupt AI speech anytime.
+        const isGeminiSpeaking = audioCtx.currentTime < geminiNextStart;
+
+        // Track AI speaking transitions
+        if (isGeminiSpeaking && aiSpeakStart === 0) {
+          aiSpeakStart = Date.now();  // AI just started speaking
+        } else if (!isGeminiSpeaking && aiSpeakStart !== 0) {
+          aiSpeakStart = 0;           // AI finished speaking
+          bargeInFrames = 0;          // reset debounce counter
+        }
+
+        // Noise-floor adaptation:
+        //   • Fast (12% weight) while AI speaks — reaches bleed-through level in ~700 ms.
+        //   • Slow decay when AI is silent — keeps a recent memory of the floor.
+        if (isGeminiSpeaking) {
+          noiseFloor = noiseFloor * 0.88 + smoothedVolume * 0.12;
+        } else {
+          noiseFloor = Math.max(0.005, noiseFloor * 0.998);
+        }
+
+        // Barge-in detection:
+        //   • Must wait for settling delay (floor not yet reliable right after AI starts).
+        //   • User volume must exceed threshold for several consecutive frames.
+        const bargeInThreshold = Math.max(BARGE_IN_MIN_RMS, noiseFloor * BARGE_IN_MULT);
+        const settledEnough    = aiSpeakStart > 0 && (Date.now() - aiSpeakStart) > BARGE_IN_SETTLE;
+        const aboveThreshold   = isGeminiSpeaking && settledEnough && smoothedVolume > bargeInThreshold;
+
+        if (aboveThreshold) bargeInFrames = Math.min(bargeInFrames + 1, BARGE_IN_FRAMES + 2);
+        else                 bargeInFrames = Math.max(0, bargeInFrames - 1);
+
+        const isBargeIn = isGeminiSpeaking
+          && bargeInFrames >= BARGE_IN_FRAMES
+          && Date.now() > bargeInCooldownUntil;
+
         if (!vadReady || isMediaPlaying || !geminiWs || geminiWs.readyState !== WebSocket.OPEN) return;
+
+        // Gate: don't forward mic audio to Gemini while AI is speaking.
+        // This breaks the echo loop entirely. Only open the gate on real barge-in.
+        if (isGeminiSpeaking && !isBargeIn) return;
+
+        // Barge-in confirmed — stop local AI playback and let user audio through.
+        if (isBargeIn) {
+          bargeInFrames = 0;
+          bargeInCooldownUntil = Date.now() + BARGE_IN_COOLDOWN;
+          playbackGeneration++;
+          geminiNextStart = 0;
+          activeAudioSources.forEach(src => { try { src.stop(); } catch {} });
+          activeAudioSources = [];
+          robotState = 'LISTENING';
+          currentExpression = 'IDLE';
+        }
 
         const ratio = SR / TR, outLen = Math.floor(input.length / ratio);
         const pcm = new Int16Array(outLen);
@@ -1123,52 +1221,6 @@
 
       connectGeminiLive();
       console.log('[GeminiLive] audio pipeline ready, sampleRate:', SR);
-    }
-
-    // ── TTS fallback ──────────────────────────────────────────────
-    async function playTTS(text) {
-      let played = false;
-      try {
-        const streamUrl = '/api/tts/stream?text=' + encodeURIComponent(text);
-        if (audioCtx && audioCtx.state === 'suspended') await audioCtx.resume();
-        await new Promise((resolve, reject) => {
-          const ttsEl = new Audio();
-          ttsEl.preload = 'auto';
-          try {
-            const ttsSrc = audioCtx.createMediaElementSource(ttsEl);
-            const ttsGain = audioCtx.createGain();
-            ttsAnalyser = audioCtx.createAnalyser();
-            ttsAnalyser.fftSize = 256;
-            ttsAnalyser.smoothingTimeConstant = 0.4;
-            ttsSrc.connect(ttsAnalyser);
-            ttsAnalyser.connect(ttsGain);
-            ttsGain.connect(audioCtx.destination);
-          } catch (routeErr) {
-            console.warn('AudioContext routing skipped:', routeErr.message);
-            ttsAnalyser = null;
-          }
-          ttsEl.onended = () => { mouthOpen = 0; mouthTarget = 0; ttsAnalyser = null; resolve(); };
-          ttsEl.onerror = (e) => { ttsAnalyser = null; reject(e); };
-          ttsEl.src = streamUrl;
-          ttsEl.play().catch(reject);
-        });
-        played = true;
-      } catch (err) {
-        console.warn('Edge TTS failed, using Web Speech:', err.message);
-      }
-      if (!played) {
-        await new Promise(resolve => {
-          window.speechSynthesis.cancel();
-          const utter = new SpeechSynthesisUtterance(text);
-          utter.rate = 1.05; utter.pitch = 1.1;
-          const voices = window.speechSynthesis.getVoices();
-          const pick = voices.find(v => v.lang.startsWith('en') && v.name.toLowerCase().includes('female'))
-                    || voices.find(v => v.lang.startsWith('en')) || voices[0];
-          if (pick) utter.voice = pick;
-          utter.onend = resolve; utter.onerror = resolve;
-          window.speechSynthesis.speak(utter);
-        });
-      }
     }
 
     // ── MOUTH ANIMATION ───────────────────────────────────────────
