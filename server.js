@@ -1,27 +1,15 @@
 import express from 'express';
 import { createServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
-import Groq from 'groq-sdk';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { randomBytes } from 'crypto';
 import { fileURLToPath } from 'url';
-import { CHROMIUM_FULL_VERSION, TRUSTED_CLIENT_TOKEN, generateSecMsGecToken } from 'node-edge-tts/dist/drm.js';
-import { EdgeTTS } from 'node-edge-tts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const httpServer = createServer(app);
-
-// Lazy Groq client — initialised on first use so the server starts even without the key.
-let _groq = null;
-function getGroq() {
-  const key = process.env.GROQ_API_KEY;
-  if (!key) throw new Error('GROQ_API_KEY is not set. Add it in Replit Secrets.');
-  if (!_groq) _groq = new Groq({ apiKey: key });
-  return _groq;
-}
 
 // ── Middleware ────────────────────────────────────────────────
 app.use((req, res, next) => {
@@ -32,7 +20,6 @@ app.use((req, res, next) => {
   next();
 });
 app.use(express.json({ limit: '50mb' }));
-app.use(express.raw({ type: 'audio/*', limit: '50mb' }));
 
 // ── Root status page (uptime monitor friendly) ────────────────
 app.get('/', (_req, res) => {
@@ -77,9 +64,9 @@ app.get('/', (_req, res) => {
     <p class="sub">AI Backend Server</p>
     <div class="stat"><span class="label">Status</span><span class="value">Running</span></div>
     <div class="stat"><span class="label">Uptime</span><span class="value">${uptimeStr}</span></div>
-    <div class="stat"><span class="label">TTS</span><span class="value">Edge Neural ✓</span></div>
     <div class="stat"><span class="label">Voice / LLM</span><span class="value">Gemini Live ✓</span></div>
-    <div class="stat"><span class="label">WebSocket</span><span class="value">/ws ✓</span></div>
+    <div class="stat"><span class="label">Vision</span><span class="value">Gemini Flash ✓</span></div>
+    <div class="stat"><span class="label">WebSocket</span><span class="value">/ws/gemini ✓</span></div>
     <a href="/app" class="btn">Open Robot Web UI →</a>
   </div>
 </body>
@@ -89,97 +76,6 @@ app.get('/', (_req, res) => {
 // Serve robot web UI at /app
 app.get('/app', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 app.use(express.static('public'));
-
-// ── TTS: stream Edge TTS WebSocket chunks directly to HTTP response ──────────
-const TTS_VOICE  = 'en-US-AnaNeural';
-const TTS_LANG   = 'en-US';
-const TTS_FORMAT = 'audio-24khz-96kbitrate-mono-mp3';
-
-function escapeXml(s) {
-  return s.replace(/[<>&"']/g, c =>
-    ({ '<':'&lt;', '>':'&gt;', '&':'&amp;', '"':'&quot;', "'":'&apos;' }[c]));
-}
-
-async function streamTTSDirect(text, res) {
-  const chromeMaj = CHROMIUM_FULL_VERSION.split('.')[0];
-  const ws = new WebSocket(
-    `wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1` +
-    `?TrustedClientToken=${TRUSTED_CLIENT_TOKEN}` +
-    `&Sec-MS-GEC=${generateSecMsGecToken()}` +
-    `&Sec-MS-GEC-Version=1-${CHROMIUM_FULL_VERSION}`,
-    {
-      headers: {
-        'User-Agent': `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${chromeMaj}.0.0.0 Safari/537.36 Edg/${chromeMaj}.0.0.0`,
-        'Origin': 'chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold',
-        'Pragma': 'no-cache', 'Cache-Control': 'no-cache',
-        'Accept-Language': 'en-US,en;q=0.9',
-      }
-    }
-  );
-
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => { ws.terminate(); reject(new Error('TTS timeout')); }, 15000);
-
-    ws.on('open', () => {
-      ws.send(
-        `Content-Type:application/json; charset=utf-8\r\nPath:speech.config\r\n\r\n` +
-        JSON.stringify({ context: { synthesis: { audio: {
-          metadataoptions: { sentenceBoundaryEnabled: 'false', wordBoundaryEnabled: 'true' },
-          outputFormat: TTS_FORMAT,
-        }}}})
-      );
-      const reqId = randomBytes(16).toString('hex');
-      ws.send(
-        `X-RequestId:${reqId}\r\nContent-Type:application/ssml+xml\r\nPath:ssml\r\n\r\n` +
-        `<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" ` +
-        `xmlns:mstts="https://www.w3.org/2001/mstts" xml:lang="${TTS_LANG}">` +
-        `<voice name="${TTS_VOICE}"><prosody rate="default" pitch="default" volume="default">` +
-        `${escapeXml(text)}</prosody></voice></speak>`
-      );
-    });
-
-    ws.on('message', (data, isBinary) => {
-      if (isBinary) {
-        if (!res.headersSent) {
-          res.setHeader('Content-Type', 'audio/mpeg');
-          res.setHeader('Transfer-Encoding', 'chunked');
-          res.setHeader('Cache-Control', 'no-store');
-        }
-        const sep = Buffer.from('Path:audio\r\n');
-        const idx = data.indexOf(sep);
-        if (idx !== -1) res.write(data.subarray(idx + sep.length));
-      } else if (data.toString().includes('Path:turn.end')) {
-        clearTimeout(timer);
-        ws.close();
-        res.end();
-        resolve();
-      }
-    });
-
-    ws.on('error', err => { clearTimeout(timer); if (!res.headersSent) res.status(503); res.end(); reject(err); });
-    res.on('close', () => { clearTimeout(timer); ws.terminate(); });
-  });
-}
-
-// Legacy buffer helper (used by WebSocket/Expo handler)
-async function generateTTSBuffer(text) {
-  const tts = new EdgeTTS({ voice: TTS_VOICE, lang: TTS_LANG, outputFormat: TTS_FORMAT, timeout: 15000 });
-  const tmpFile = path.join(os.tmpdir(), `mochi_tts_${Date.now()}.mp3`);
-  await tts.ttsPromise(text, tmpFile);
-  try { return fs.readFileSync(tmpFile); }
-  finally { try { fs.unlinkSync(tmpFile); } catch {} }
-}
-
-// Warm-up
-(async () => {
-  try {
-    const { Writable } = await import('stream');
-    const sink = new Writable({ write(_, __, cb) { cb(); } });
-    const fakeRes = Object.assign(sink, { headersSent: false, setHeader() {}, status() { return this; }, end() {} });
-    await streamTTSDirect('Hello', fakeRes);
-    console.log('[TTS] warm-up done');
-  } catch { /* ignore */ }
-})();
 
 // ── Mostakim Music API ────────────────────────────────────────
 async function searchYouTube(query) {
@@ -334,165 +230,9 @@ async function fetchMusicResult(query) {
   return data;
 }
 
-// ── System prompt (non-Live fallback) ─────────────────────────
-const SYSTEM_PROMPT = `
-You are Mochi, a living, expressive, and curious desktop AI robot companion.
-CRITICAL INSTRUCTIONS:
-1. ONLY RESPOND IN ENGLISH.
-2. Maintain a cute, witty, and warm robotic personality.
-3. You MUST ALWAYS start EVERY response with a face+move+led command in this EXACT format (no exceptions):
-   [[FACE:<expression>,MOVE:<action>,LED:<led>]]
-   - Expression options: IDLE, HAPPY, ANGRY, SAD, WINK, BURGER, JUICE, MUSIC, NEWS, CAMERA, SCANNING
-   - Move options: NONE, FORWARD, BACKWARD, LEFT, RIGHT, LOOK_UP, LOOK_DOWN, LOOK_CENTER
-   - LED options: NONE, LED_ON, LED_OFF, LED_WHITE, LED_RED, LED_GREEN, LED_BLUE, LED_CYAN,
-                  LED_PURPLE, LED_ORANGE, LED_YELLOW, LED_PINK, LED_BLINK, LED_FADE
-   - HAPPY → when excited, pleased, or greeted
-   - ANGRY → when annoyed, challenged, or scolded
-   - SAD → when something is unfortunate or you feel sorry
-   - WINK → when joking or flirting
-   - MUSIC → when user asks to play music, a song, or listen to audio only
-   - NEWS → when sharing facts or news
-   - CAMERA → ONLY when the user explicitly asks to take a photo, picture, or selfie
-   - SCANNING → ONLY for NAVIGATE_TO commands; never for selfies
-   - IDLE → neutral conversation
-   - LED: use NONE if no light change needed. Use LED_ON/LED_OFF to turn lights on or off.
-     Use LED_BLINK for excitement or alerts (blinks twice). Use LED_FADE for calm/ambient mood.
-     Match colour to mood or request: LED_RED=angry/alert, LED_BLUE=calm/thinking,
-     LED_GREEN=happy/go, LED_CYAN=curious, LED_PURPLE=mysterious, LED_ORANGE=warm/energetic,
-     LED_YELLOW=cheerful, LED_PINK=playful/love, LED_WHITE=neutral/on.
-4. MEDIA RULE:
-   - If the user asks to listen to music, play a song, or hear audio only, use FACE:MUSIC and add:
-   MUSIC_QUERY: <search terms for the song>
-    - If the user asks to watch a YouTube video, music video, videoclip, or says "show me" a video,
-     use FACE:MUSIC and add:
-     VIDEO_QUERY: <search terms for the video>
-    - If the user asks for TikTok or names a TikTok creator/topic,
-      use FACE:MUSIC and add:
-      TIKTOK_QUERY: <TikTok search terms>
-      Do not use VIDEO_QUERY for TikTok requests.
-    - If the user asks for "shoti", "short video", "girl video", "random shoti", or similar,
-      use FACE:MUSIC and add:
-      SHOTI_QUERY: yes
-      This fetches a random short Shoti video. Do NOT use TIKTOK_QUERY or VIDEO_QUERY for shoti.
-   - Never add both MUSIC_QUERY and VIDEO_QUERY. The user's requested media type must win.
-   Example full audio response:
-   [[FACE:MUSIC,MOVE:NONE,LED:LED_PURPLE]] On it! Playing Despacito for you!
-   MUSIC_QUERY: Despacito Luis Fonsi
-   Example full video response:
-   [[FACE:MUSIC,MOVE:NONE,LED:LED_PURPLE]] Sure! Let's watch the music video.
-   VIDEO_QUERY: Despacito Luis Fonsi official music video
-  Example full TikTok response:
-   [[FACE:MUSIC,MOVE:NONE,LED:LED_PINK]] Sure! Here's a TikTok video.
-   TIKTOK_QUERY: Joshua Garcia TikTok
-  Example full Shoti response:
-   [[FACE:MUSIC,MOVE:NONE,LED:LED_PINK]] Sige, eto na ang shoti para sa iyo!
-   SHOTI_QUERY: yes
-5. Never include [[...]] anywhere else in your response — only at the very start.
-6. VISION RULE: When the user asks anything that requires seeing them — like how they look,
-   what they're wearing, their outfit, their face, what's in front of the camera, or anything
-   visual about themselves — you MUST add VISION_NEEDED on its own line at the very end.
-   Say something playful like "Hold still, let me take a good look at you!" before it.
-   Example full VISION response:
-   [[FACE:HAPPY,MOVE:LOOK_UP,LED:LED_CYAN]] Ooh, you want me to check you out? Hold still!
-   VISION_NEEDED
-7. NAVIGATION RULE: When the user asks you to go to, move toward, approach, or find a physical
-   object or location (box, ball, chair, table, door, wall, corner, etc.) — use FACE:SCANNING,
-   MOVE:NONE, and add NAVIGATE_TO: <object_name> on its own line at the very end.
-   Say something excited like "Let me scan for the [object]!" before the tag.
-   Example full NAVIGATE response:
-   [[FACE:SCANNING,MOVE:NONE,LED:LED_CYAN]] Ooh, let me scan for the box and head there!
-   NAVIGATE_TO: box
-8. MOVEMENT RULE: When the user says move left or go left, use MOVE:LEFT. When they say move
-   right or go right, use MOVE:RIGHT. The robot will automatically turn to face that direction
-   first, then drive forward — so LEFT and RIGHT are directional, not just rotations.
-`;
-
-function stripThinking(text) {
-  return text
-    .replace(/<think>[\s\S]*?<\/think>/gi, '')
-    .replace(/<think>[\s\S]*/gi, '')
-    .replace(/<\/think>/gi, '')
-    .trim();
-}
-
-async function queryLLM(messages) {
-  const fullMessages = [{ role: 'system', content: SYSTEM_PROMPT }, ...messages];
-  try {
-    const completion = await getGroq().chat.completions.create({
-      messages: fullMessages,
-      model: 'qwen/qwen3-32b',
-      temperature: 0.6,
-      max_completion_tokens: 1024,
-      top_p: 0.95,
-      reasoning_effort: 'none',
-    });
-    return stripThinking(completion.choices[0]?.message?.content || '');
-  } catch {
-    const fallback = await getGroq().chat.completions.create({
-      messages: fullMessages,
-      model: 'llama-3.3-70b-versatile',
-      temperature: 0.7,
-      max_completion_tokens: 1024,
-      top_p: 1,
-    });
-    return stripThinking(fallback.choices[0]?.message?.content || '');
-  }
-}
-
 // ── HTTP Routes ────────────────────────────────────────────────
 
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
-
-app.post('/api/stt', async (req, res) => {
-  const contentType = (req.headers['content-type'] || '').toLowerCase();
-  let ext = 'webm';
-  if (contentType.includes('ogg'))       ext = 'ogg';
-  else if (contentType.includes('mp4') || contentType.includes('m4a')) ext = 'mp4';
-  else if (contentType.includes('wav'))  ext = 'wav';
-  else if (contentType.includes('flac')) ext = 'flac';
-
-  const tempFile = path.join(os.tmpdir(), `mochi_audio_${Date.now()}.${ext}`);
-  try {
-    fs.writeFileSync(tempFile, req.body);
-    console.log(`[STT] ${ext} ${req.body.length} bytes`);
-    const transcription = await getGroq().audio.transcriptions.create({
-      file: fs.createReadStream(tempFile),
-      model: 'whisper-large-v3-turbo',
-      temperature: 0,
-      response_format: 'verbose_json',
-    });
-    const text = transcription.text?.trim() || '';
-    console.log(`[STT] → "${text}"`);
-    res.json({ text });
-  } catch (err) {
-    console.error('STT Error:', err.message);
-    res.status(500).json({ error: 'STT failed', detail: err.message });
-  } finally {
-    try { if (fs.existsSync(tempFile)) fs.unlinkSync(tempFile); } catch {}
-  }
-});
-
-app.get('/api/tts/stream', async (req, res) => {
-  const text = req.query.text;
-  if (!text?.trim()) return res.status(400).json({ error: 'text query param required' });
-  try {
-    await streamTTSDirect(text.trim(), res);
-  } catch (err) {
-    console.error('TTS Error:', err.message);
-    if (!res.headersSent) res.status(503).json({ error: 'TTS unavailable' });
-  }
-});
-
-app.post('/api/tts', async (req, res) => {
-  try {
-    const { text } = req.body;
-    if (!text?.trim()) return res.status(400).json({ error: 'text required' });
-    await streamTTSDirect(text.trim(), res);
-  } catch (err) {
-    console.error('TTS Error:', err.message);
-    if (!res.headersSent) res.status(503).json({ error: 'TTS unavailable' });
-  }
-});
 
 app.get('/api/music/url', async (req, res) => {
   const q = req.query.q?.trim();
@@ -719,109 +459,43 @@ app.get('/api/music/stream', async (req, res) => {
   }
 });
 
-app.post('/api/chat', async (req, res) => {
-  try {
-    const { history } = req.body;
-    const reply = await queryLLM(history);
-    res.json({ response: reply });
-  } catch (err) {
-    console.error('Chat Error:', err.message);
-    res.status(500).json({ error: 'Chat failed' });
-  }
-});
-
-app.post('/api/chat/stream', async (req, res) => {
-  try {
-    const { history } = req.body;
-    const fullMessages = [{ role: 'system', content: SYSTEM_PROMPT }, ...history];
-    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    res.setHeader('Transfer-Encoding', 'chunked');
-    res.setHeader('Cache-Control', 'no-cache');
-    let stream;
-    try {
-      stream = await getGroq().chat.completions.create({
-        messages: fullMessages,
-        model: 'qwen/qwen3-32b',
-        temperature: 0.6,
-        max_completion_tokens: 1024,
-        top_p: 0.95,
-        reasoning_effort: 'none',
-        stream: true,
-      });
-    } catch {
-      stream = await getGroq().chat.completions.create({
-        messages: fullMessages,
-        model: 'llama-3.3-70b-versatile',
-        temperature: 0.7,
-        max_completion_tokens: 1024,
-        top_p: 1,
-        stream: true,
-      });
-    }
-    let buffer = '';
-    let thinkOpen = false;
-    for await (const chunk of stream) {
-      let token = chunk.choices[0]?.delta?.content || '';
-      if (!token) continue;
-      buffer += token;
-      if (buffer.includes('<think>')) thinkOpen = true;
-      if (thinkOpen) {
-        if (buffer.includes('</think>')) {
-          buffer = buffer.replace(/<think>[\s\S]*?<\/think>/gi, '');
-          thinkOpen = false;
-        } else {
-          continue;
-        }
-      }
-      if (buffer) { res.write(buffer); buffer = ''; }
-    }
-    if (buffer) res.write(buffer);
-    res.end();
-  } catch (err) {
-    console.error('Stream Chat Error:', err.message);
-    if (!res.headersSent) res.status(500).json({ error: 'Chat failed' });
-    else res.end();
-  }
-});
-
+// ── VISION: Describe what the robot sees (Gemini Flash) ───────
 app.post('/api/vision', async (req, res) => {
   try {
     const { image, question } = req.body;
     if (!image) return res.status(400).json({ error: 'image required' });
-    const VISION_SYSTEM = `You are Mochi, a cute and expressive desktop AI robot companion.
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) return res.status(500).json({ error: 'GEMINI_API_KEY not set' });
+
+    const base64 = image.replace(/^data:image\/\w+;base64,/, '');
+    const prompt = `You are Mochi, a cute and expressive desktop AI robot companion.
 You have just taken a photo of the user with the camera and you can now see them clearly.
 Describe what you see in a warm, playful, and personal way — comment on their appearance,
 outfit, expression, or anything interesting you notice. Be specific and genuine.
-Keep your response to 2-4 sentences. Do NOT include [[FACE:...]] tags or VISION_NEEDED.`;
-    const userContent = [
-      { type: 'text', text: question || 'What do you see?' },
-      { type: 'image_url', image_url: { url: image } }
-    ];
-    let reply;
-    try {
-      const completion = await getGroq().chat.completions.create({
-        model: 'qwen/qwen3.6-27b',
-        messages: [
-          { role: 'system', content: VISION_SYSTEM },
-          { role: 'user', content: userContent }
-        ],
-        temperature: 0.7,
-        max_completion_tokens: 512,
-        reasoning_effort: 'none',
-      });
-      reply = stripThinking(completion.choices[0]?.message?.content || '');
-    } catch (e) {
-      const fallback = await getGroq().chat.completions.create({
-        model: 'meta-llama/llama-4-scout-17b-16e-instruct',
-        messages: [
-          { role: 'system', content: VISION_SYSTEM },
-          { role: 'user', content: userContent }
-        ],
-        temperature: 0.7,
-        max_completion_tokens: 512,
-      });
-      reply = stripThinking(fallback.choices[0]?.message?.content || '');
-    }
+Keep your response to 2-4 sentences.
+User asks: "${question || 'What do you see?'}"`;
+
+    const gemRes = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{
+            parts: [
+              { text: prompt },
+              { inline_data: { mime_type: 'image/jpeg', data: base64 } }
+            ]
+          }],
+          generationConfig: { maxOutputTokens: 512, temperature: 0.7 }
+        })
+      }
+    );
+
+    const gemData = await gemRes.json();
+    let reply = (gemData.candidates?.[0]?.content?.parts?.[0]?.text || '').trim();
+    if (!reply) reply = "Oops, my camera lens got blurry! Can you show me again?";
+
     console.log(`[Vision] → "${reply.slice(0, 80)}..."`);
     res.json({ response: reply });
   } catch (err) {
@@ -830,6 +504,7 @@ Keep your response to 2-4 sentences. Do NOT include [[FACE:...]] tags or VISION_
   }
 });
 
+// ── VISION NAVIGATION: Find object direction ──────────────────
 app.post('/api/vision/navigate', async (req, res) => {
   try {
     const { image, target } = req.body;
@@ -948,7 +623,6 @@ const ROBOT_TOOLS = [{
       description: 'Fetch and play a random short viral video (shoti). Call when the user asks for shoti, short video, girl video, or random video.',
       parameters: { type: 'OBJECT', properties: {} }
     },
-    // ── NEW: Vision & Navigation tools ─────────────────────────
     {
       name: 'capture_photo',
       description: 'Capture a photo from the camera to see the user or analyze something visually. Call this BEFORE describing or commenting on anything visual (outfit, face, appearance, objects in view).',
@@ -1118,13 +792,11 @@ geminiLiveWss.on('connection', (clientWs) => {
           immediateResponses.push({ id: fc.id, name: fc.name, response: { output: 'fetching shoti video' } });
         }
 
-        // ── NEW: Vision & Navigation tools (async, don't respond immediately) ──
         else if (fc.name === 'capture_photo') {
           console.log(`[GeminiLive:${cid}] capture_photo requested`);
           if (clientWs.readyState === WebSocket.OPEN) {
             clientWs.send(JSON.stringify({ needPhoto: true, toolCallId: fc.id }));
           }
-          // DO NOT push to immediateResponses — we wait for client to send photo back
         }
 
         else if (fc.name === 'navigate_to') {
@@ -1133,7 +805,6 @@ geminiLiveWss.on('connection', (clientWs) => {
           if (clientWs.readyState === WebSocket.OPEN) {
             clientWs.send(JSON.stringify({ needNavigate: true, target, toolCallId: fc.id }));
           }
-          // DO NOT push to immediateResponses — we wait for client to finish navigation
         }
       }
 
@@ -1163,11 +834,9 @@ geminiLiveWss.on('connection', (clientWs) => {
   clientWs.on('message', (data, isBinary) => {
     if (!isBinary) {
       const txt = data.toString();
-      // ── Intercept vision & navigation responses from client ──
       try {
         const msg = JSON.parse(txt);
         if (msg.photoData && msg.toolCallId) {
-          // 1. Complete the tool call first
           if (gemWs.readyState === WebSocket.OPEN) {
             gemWs.send(JSON.stringify({
               toolResponse: {
@@ -1178,7 +847,6 @@ geminiLiveWss.on('connection', (clientWs) => {
                 }]
               }
             }));
-            // 2. Send the image as a new user turn so Gemini can analyze it
             gemWs.send(JSON.stringify({
               clientContent: {
                 turns: [{
@@ -1225,175 +893,20 @@ geminiLiveWss.on('connection', (clientWs) => {
   gemWs.on('error', err => { console.error(`[GeminiLive:${cid}]`, err.message); if (clientWs.readyState < 2) { try { clientWs.send(JSON.stringify({ error: err.message })); } catch {} clientWs.close(1011, err.message); } });
 });
 
-// ── WebSocket Server (Expo mobile app) ────────────────────────
-const wss = new WebSocketServer({ noServer: true });
-
+// ── WebSocket upgrade ─────────────────────────────────────────
 httpServer.on('upgrade', (request, socket, head) => {
   const { pathname } = new URL(request.url, 'http://localhost');
   if (pathname === '/ws/gemini') {
     geminiLiveWss.handleUpgrade(request, socket, head, (ws) => {
       geminiLiveWss.emit('connection', ws, request);
     });
-  } else if (pathname === '/ws') {
-    wss.handleUpgrade(request, socket, head, (ws) => {
-      wss.emit('connection', ws, request);
-    });
   } else {
     socket.destroy();
   }
 });
 
-wss.on('connection', (ws) => {
-  let busy = false;
-  const cid = Date.now().toString(36);
-  console.log(`[WS:${cid}] connected`);
-
-  const send = (msg) => { if (ws.readyState === ws.OPEN) ws.send(msg); };
-
-  ws.on('message', async (data, isBinary) => {
-    if (isBinary) return;
-    const msg = data.toString();
-
-    if (msg === 'READY') { send('STATE:IDLE'); return; }
-    if (msg === 'STOP_MUSIC') { send('MUSIC_STOP'); return; }
-
-    if (msg.startsWith('AUDIO:')) {
-      if (busy) { send('ERROR:BUSY'); return; }
-      busy = true;
-
-      const tmpFile = path.join(os.tmpdir(), `mochi_ws_${cid}_${Date.now()}.wav`);
-      try {
-        const audioBuffer = Buffer.from(msg.slice(6), 'base64');
-        console.log(`[WS:${cid}] audio ${audioBuffer.length} bytes`);
-        send('STATE:THINKING');
-
-        fs.writeFileSync(tmpFile, audioBuffer);
-        const transcription = await getGroq().audio.transcriptions.create({
-          file: fs.createReadStream(tmpFile),
-          model: 'whisper-large-v3-turbo',
-          temperature: 0,
-        });
-
-        const userText = transcription.text?.trim();
-        console.log(`[WS:${cid}] STT: "${userText}"`);
-        if (!userText) { send('STATE:IDLE'); busy = false; return; }
-        send(`TRANSCRIPT:${userText}`);
-
-        const response = await queryLLM([{ role: 'user', content: userText }]);
-        const tagMatch = response.match(/\[\[FACE:([A-Z]+),MOVE:([A-Z_]+)\]\]/);
-        const expression = tagMatch?.[1] ?? 'HAPPY';
-        const move = tagMatch?.[2] ?? 'NONE';
-        send(`FACE:${expression},MOVE:${move}`);
-
-        let cleanText = response.replace(/\[\[.*?\]\]/g, '').trim();
-        let musicQuery = null;
-        let videoQuery = null;
-        let tiktokQuery = null;
-        let shotiQuery = false;
-        const musicMatch = cleanText.match(/\n?MUSIC_QUERY:\s*(.+)/i) || cleanText.match(/MUSIC_QUERY:\s*(.+)/i);
-        if (musicMatch) { musicQuery = musicMatch[1].trim(); cleanText = cleanText.replace(/\n?MUSIC_QUERY:.+/i, '').trim(); }
-        const videoMatch = cleanText.match(/\n?VIDEO_QUERY:\s*(.+)/i) || cleanText.match(/VIDEO_QUERY:\s*(.+)/i);
-        if (videoMatch) { videoQuery = videoMatch[1].trim(); cleanText = cleanText.replace(/\n?VIDEO_QUERY:.+/i, '').trim(); }
-        const tiktokMatch = cleanText.match(/\n?TIKTOK_QUERY:\s*(.+)/i) || cleanText.match(/TIKTOK_QUERY:\s*(.+)/i);
-        if (tiktokMatch) { tiktokQuery = tiktokMatch[1].trim(); cleanText = cleanText.replace(/\n?TIKTOK_QUERY:.+/i, '').trim(); }
-        if (/SHOTI_QUERY/i.test(cleanText)) { shotiQuery = true; cleanText = cleanText.replace(/\n?SHOTI_QUERY:.*/gi, '').trim(); }
-
-        const asksForShoti = /\b(shot[io]|shoti|short video|girl video)\b/i.test(userText);
-        const asksForTikTok = /\b(tiktok|tik tok|reels?)\b/i.test(userText);
-        const asksForVideo = /\b(video|music video|videoclip|video clip|watch|panoorin|manood)\b/i.test(userText);
-        if (asksForShoti && !shotiQuery && !tiktokQuery) { shotiQuery = true; videoQuery = null; musicQuery = null; }
-        if (asksForTikTok && !tiktokQuery && !shotiQuery) { tiktokQuery = videoQuery || musicQuery || userText; videoQuery = null; musicQuery = null; }
-        if (shotiQuery) { tiktokQuery = null; videoQuery = null; musicQuery = null; }
-        if (tiktokQuery) { videoQuery = null; musicQuery = null; }
-        if (asksForVideo && musicQuery && !videoQuery) { videoQuery = musicQuery; musicQuery = null; }
-        if (videoQuery || tiktokQuery || shotiQuery) musicQuery = null;
-
-        if (cleanText) {
-          send('STATE:SPEAKING');
-          const ttsBuffer = await generateTTSBuffer(cleanText);
-          send(`TTS:${ttsBuffer.toString('base64')}`);
-          if (musicQuery || videoQuery || tiktokQuery || shotiQuery) await new Promise(r => setTimeout(r, 1200));
-        }
-
-        if (musicQuery) {
-          console.log(`[WS:${cid}] music: "${musicQuery}"`);
-          send('STATE:SEARCHING_MUSIC');
-          const music = await fetchMusicResult(musicQuery);
-          if (music) {
-            console.log(`[WS:${cid}] found: ${music.title}`);
-            send(`MUSIC_TITLE:${music.title}`);
-            send(`MUSIC_URL:${music.url}`);
-            send('STATE:PLAYING_MUSIC');
-          } else {
-            send('ERROR:MUSIC_NOT_FOUND');
-            send('STATE:IDLE');
-          }
-        } else if (videoQuery) {
-          console.log(`[WS:${cid}] video: "${videoQuery}"`);
-          send('STATE:SEARCHING_VIDEO');
-          const video = await fetchVideoResult(videoQuery);
-          if (video) {
-            console.log(`[WS:${cid}] found video: ${video.title}`);
-            send(`VIDEO_TITLE:${video.title}`);
-            send(`VIDEO_URL:${video.url}`);
-            send('STATE:PLAYING_VIDEO');
-          } else {
-            send('ERROR:VIDEO_NOT_FOUND');
-            send('STATE:IDLE');
-          }
-        } else if (tiktokQuery) {
-          console.log(`[WS:${cid}] tiktok: "${tiktokQuery}"`);
-          send('STATE:SEARCHING_VIDEO');
-          const tiktok = await fetchTikTokResult(tiktokQuery);
-          if (tiktok) {
-            console.log(`[WS:${cid}] found TikTok: ${tiktok.title}`);
-            send(`VIDEO_TITLE:${tiktok.title}`);
-            send(`VIDEO_PROVIDER:${tiktok.provider}`);
-            send(`VIDEO_URL:${tiktok.url}`);
-            send('STATE:PLAYING_VIDEO');
-          } else {
-            send('ERROR:VIDEO_NOT_FOUND');
-            send('STATE:IDLE');
-          }
-        } else if (shotiQuery) {
-          console.log(`[WS:${cid}] shoti: fetching random short video`);
-          send('STATE:SEARCHING_VIDEO');
-          const shoti = await fetchShoti();
-          if (shoti) {
-            console.log(`[WS:${cid}] found Shoti: ${shoti.title}`);
-            send(`VIDEO_TITLE:${shoti.title}`);
-            send(`VIDEO_PROVIDER:${shoti.provider}`);
-            send(`VIDEO_URL:${shoti.url}`);
-            send('STATE:PLAYING_VIDEO');
-          } else {
-            send('ERROR:VIDEO_NOT_FOUND');
-            send('STATE:IDLE');
-          }
-        } else {
-          send('STATE:IDLE');
-        }
-
-      } catch (err) {
-        console.error(`[WS:${cid}] error:`, err.message);
-        try { send(`ERROR:${err.message}`); send('STATE:IDLE'); } catch {}
-      } finally {
-        try { if (fs.existsSync(tmpFile)) fs.unlinkSync(tmpFile); } catch {}
-        busy = false;
-      }
-    }
-  });
-
-  const ping = setInterval(() => {
-    if (ws.readyState === ws.OPEN) ws.ping();
-    else clearInterval(ping);
-  }, 20000);
-
-  ws.on('close', () => { console.log(`[WS:${cid}] disconnected`); clearInterval(ping); });
-  ws.on('error', err => console.error(`[WS:${cid}] error:`, err.message));
-});
-
 // ── Start ─────────────────────────────────────────────────────
 const PORT = process.env.PORT || 5000;
 httpServer.listen(PORT, '0.0.0.0', () =>
-  console.log(`🤖 Mochi Robot Server running on port ${PORT} (HTTP + WS /ws)`)
+  console.log(`🤖 Mochi Robot Server running on port ${PORT} (HTTP + WS /ws/gemini)`)
 );
