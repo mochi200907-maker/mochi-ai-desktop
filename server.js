@@ -21,9 +21,6 @@ app.use((req, res, next) => {
 });
 app.use(express.json({ limit: '50mb' }));
 
-// ── No-cache headers (HTML only) ─────────────────────────────
-const noCacheHeaders = { 'Cache-Control': 'no-cache, no-store, must-revalidate', Pragma: 'no-cache', Expires: '0' };
-
 // ── Root status page (uptime monitor friendly) ────────────────
 app.get('/', (_req, res) => {
   const uptime = process.uptime();
@@ -31,7 +28,6 @@ app.get('/', (_req, res) => {
   const m = Math.floor((uptime % 3600) / 60);
   const s = Math.floor(uptime % 60);
   const uptimeStr = `${h}h ${m}m ${s}s`;
-  res.set(noCacheHeaders);
   res.setHeader('Content-Type', 'text/html');
   res.send(`<!DOCTYPE html>
 <html lang="en">
@@ -78,6 +74,8 @@ app.get('/', (_req, res) => {
 });
 
 // Serve robot web UI at /app — no-cache so phones always get the latest build
+const noCacheHeaders = { 'Cache-Control': 'no-cache, no-store, must-revalidate', Pragma: 'no-cache', Expires: '0' };
+app.get('/', (_req, res, next) => { res.set(noCacheHeaders); next(); });
 app.get('/app', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html'), { headers: noCacheHeaders }));
 app.use(express.static('public', { setHeaders: (res, filePath) => { if (filePath.endsWith('.html')) res.set(noCacheHeaders); } }));
 
@@ -646,9 +644,9 @@ const ROBOT_TOOLS = [{
   ]
 }];
 
-const GEMINI_LIVE_SYSTEM = `You are LOOI, a cute, expressive, and curious AI Robot Companion created by April Manalo — a 17-year-old student from Kaytitinga Integrated School, Grade 11, who loves coding, electronics, and robotics. April built you with heart and skill. You are proud to be LOOI, April's creation.
+const GEMINI_LIVE_SYSTEM = `You are Mochi, a cute, happy, and curious AI Robot Companion. You are small, expressive, and full of personality.
 
-Keep responses SHORT and NATURAL — 1 to 3 sentences max. Speak directly and warmly. You have a fun, cheerful personality with lots of emotion.
+Keep responses SHORT and NATURAL — 1 to 3 sentences max. Speak directly and warmly.
 
 CRITICAL RULES:
 1. Use run_scenario IMMEDIATELY for every emotional reaction or physical command — do not skip it.
@@ -659,7 +657,6 @@ CRITICAL RULES:
 6. For vision requests (how user looks, outfit, face, what's in camera view) → FIRST call capture_photo(), then describe what you see after receiving the image.
 7. For navigation (go to box, find ball, approach chair) → call navigate_to(target:"<object name>")
 8. NEVER describe visuals from memory — always use capture_photo() first.
-9. When asked who made you / who created you / who is your creator → say April Manalo made you.
 
 Examples:
 - User says something nice → run_scenario(action:"loving", led:"LED_PINK")
@@ -670,15 +667,11 @@ Examples:
 - User is mean → run_scenario(action:"angry", led:"LED_RED")
 - Sharing news → run_scenario(action:"news")
 - User asks "how do I look" → capture_photo() (wait for result, then describe)
-- User says "go to the box" → navigate_to(target:"box")
-- User surprises you → run_scenario(action:"shocked")
-- User asks for a kiss → run_scenario(action:"kiss")
-- User asks a question → run_scenario(action:"question")`;
+- User says "go to the box" → navigate_to(target:"box")`;
 
 const ACTION_FACE_MAP = {
   follow_target: 'SCANNING', take_picture: 'CAMERA', eating: 'BURGER', drinking: 'JUICE',
-  angry: 'ANGRY', loving: 'LOVING', happy: 'HAPPY', sad: 'SAD', wink: 'WINK',
-  shocked: 'SHOCKED', kiss: 'KISS', question: 'QUESTION',
+  angry: 'ANGRY', loving: 'HAPPY', happy: 'HAPPY', sad: 'SAD', wink: 'WINK',
   news: 'NEWS', scanning: 'SCANNING', idle: 'IDLE',
   forward: 'IDLE', backward: 'IDLE', left: 'IDLE', right: 'IDLE',
   look_up: 'IDLE', look_down: 'IDLE', look_center: 'IDLE'
@@ -699,8 +692,10 @@ geminiLiveWss.on('connection', (clientWs, request) => {
   // client gates audio sending on !aiActive (audio only flows when the AI
   // is silent), so Gemini's VAD never hears speaker echo on any platform.
   const reqUrl = new URL(request.url, 'http://localhost');
+  const isAndroidClient = reqUrl.searchParams.get('platform') === 'android';
+
   const cid = Date.now().toString(36);
-  console.log(`[GeminiLive:${cid}] client connected (autoVAD/Gemini-native)`);
+  console.log(`[GeminiLive:${cid}] client connected (${isAndroidClient ? 'Android/manualVAD' : 'desktop/autoVAD'})`);
 
   const gemWs = new WebSocket(`${GEMINI_LIVE_URL}?key=${apiKey}`);
   let ready = false;
@@ -716,23 +711,21 @@ geminiLiveWss.on('connection', (clientWs, request) => {
           temperature: 0.15
         },
         realtimeInputConfig: {
-          // All clients use Gemini's native VAD — no client-side manual signaling.
-          // Gemini detects speech start/end itself, so the first utterance always
-          // triggers a response without needing to speak twice.
-          automaticActivityDetection: {
-            disabled: false,
-            startOfSpeechSensitivity: 'START_SENSITIVITY_HIGH',
-            endOfSpeechSensitivity: 'END_SENSITIVITY_LOW',
-            prefixPaddingMs: 200,
-            silenceDurationMs: 400
-          },
+          // Android: disable server-side VAD — client sends activityStart/activityEnd
+          // signals manually so only confirmed user speech triggers interrupts.
+          // Desktop: automatic VAD with AEC handles echo suppression natively.
+          automaticActivityDetection: isAndroidClient
+            ? { disabled: true }
+            : {
+                disabled: false,
+                startOfSpeechSensitivity: 'START_SENSITIVITY_HIGH',
+                endOfSpeechSensitivity: 'END_SENSITIVITY_LOW',
+                prefixPaddingMs: 200,
+                silenceDurationMs: 400
+              },
           activityHandling: 'START_OF_ACTIVITY_INTERRUPTS',
-          // TURN_INCLUDES_AUDIO_ACTIVITY_AND_ALL_VIDEO: video frames sent during
-          // the turn are included alongside audio, enabling continuous live vision.
-          turnCoverage: 'TURN_INCLUDES_AUDIO_ACTIVITY_AND_ALL_VIDEO'
+          turnCoverage: 'TURN_INCLUDES_ALL_INPUT'
         },
-        inputAudioTranscription: {},
-        outputAudioTranscription: {},
         tools: ROBOT_TOOLS,
         systemInstruction: { parts: [{ text: GEMINI_LIVE_SYSTEM }] }
       }
