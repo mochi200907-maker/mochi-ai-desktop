@@ -2,15 +2,20 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <!-- Full-screen web app on iOS (Add to Home Screen) -->
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="mobile-web-app-capable" content="yes">
   <title>LOOI AI Robot — by April Manalo</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    html, body { width: 100%; height: 100%; overflow: hidden; font-family: system-ui, -apple-system, sans-serif; }
-    body { background: #050812; }
+    /* 100dvh = real visible height that adjusts with mobile browser chrome */
+    html { width: 100%; height: 100%; overflow: hidden; font-family: system-ui, -apple-system, sans-serif; }
+    body { width: 100%; height: 100dvh; min-height: -webkit-fill-available; overflow: hidden; background: #050812; }
 
     #robot-screen {
-      position: fixed; inset: 0; width: 100%; height: 100%;
+      position: fixed; inset: 0; width: 100%; height: 100dvh;
       background:
         radial-gradient(circle at 50% 46%, rgba(97,211,255,0.16), transparent 34%),
         radial-gradient(circle at 50% 120%, rgba(126,224,186,0.08), transparent 44%),
@@ -1375,16 +1380,31 @@
   setInterval(() => {
     // Expression changes
     if (currentExpression !== _lastAppliedExpr) {
+      // If switching away from eating/drinking, trigger finish animations so they don't stay stuck
+      if (_lastAppliedExpr === 'BURGER' && _isEatingActive()) _faceFinishBurger();
+      if (_lastAppliedExpr === 'JUICE'  && _isDrinkingActive()) _faceFinishDrink();
       _lastAppliedExpr = currentExpression;
       _applyExpressionToFace(currentExpression);
     }
     // robotState → speaking / thinking
     if (robotState !== _lastRobotState) {
+      const prevState = _lastRobotState;
       _lastRobotState = robotState;
       const isSpeaking = (robotState === 'SPEAKING');
       const isThinking = (robotState === 'THINKING');
       _faceSetSpeaking(isSpeaking);
       _faceSetThinking(isThinking);
+      // When AI finishes speaking, clean up any lingering eating/drinking animations
+      if (robotState === 'IDLE' && (prevState === 'SPEAKING' || prevState === 'THINKING')) {
+        if (_isEatingActive()) {
+          _faceFinishBurger();
+          currentExpression = 'IDLE'; _lastAppliedExpr = 'IDLE';
+        }
+        if (_isDrinkingActive()) {
+          _faceFinishDrink();
+          currentExpression = 'IDLE'; _lastAppliedExpr = 'IDLE';
+        }
+      }
     }
   }, 80);
 
@@ -1711,11 +1731,14 @@
   // ── FACE TRACKING (MediaPipe FaceDetector) ───────────────
   // Detects faces via front camera and physically moves LOOI:
   //   • Head servo  → LOOK_UP / LOOK_DOWN / LOOK_CENTER (vertical)
-  //   • Drive motors → LEFT / RIGHT body rotation (horizontal)
+  //   • Drive motors → proportional LEFT/RIGHT body rotation
   //   • LOOI eye direction mirrors tracking in the UI
+  //   • Scans for a face when none detected
   let _ftStream=null,_ftVideo=null,_ftTimer=null,_ftRunning=false;
   let _ftZoneV=null,_ftZoneH=null,_ftNoFace=0,_ftHCooldown=0;
   let _ftDetector=null;
+  // Face-search state
+  let _ftScanDir=1,_ftScanStep=0;
   const _ftCanvas=document.createElement('canvas');
   _ftCanvas.width=320; _ftCanvas.height=240;
   const _ftCtx=_ftCanvas.getContext('2d',{willReadFrequently:true});
@@ -1749,7 +1772,7 @@
 
   function _ftApplyResult(faces){
     if(faces.length>0){
-      _ftNoFace=0;
+      _ftNoFace=0; _ftScanStep=0;
       const bb=faces[0].boundingBox; // pixels on _ftCanvas (320×240)
       const cx=(bb.originX+bb.width/2)/320;
       const cy=(bb.originY+bb.height/2)/240;
@@ -1761,26 +1784,43 @@
         sendBLECommand(zv==='UP'?'LOOK_UP':zv==='DOWN'?'LOOK_DOWN':'LOOK_CENTER');
       }
 
-      // ── Horizontal: body rotation + eye direction ─────────
-      // Front camera is mirrored — cx<0.33 means face is physically to the RIGHT.
-      // Don't spin the body while robot is speaking — it looks weird.
-      const zh=cx<0.33?'RIGHT':cx>0.67?'LEFT':'CENTER';
-      if(zh!=='CENTER'&&zh!==_ftZoneH&&Date.now()>_ftHCooldown){
-        _ftZoneH=zh; _ftHCooldown=Date.now()+900;
-        if(robotState!=='SPEAKING')sendBLECommand(zh); // rotate body
-        _faceSetEyeDir(zh==='LEFT'?'left':'right');
-      }else if(zh==='CENTER'&&_ftZoneH!=='CENTER'){
-        _ftZoneH='CENTER';
-        _faceSetEyeDir('center');
+      // ── Horizontal: proportional body rotation ────────────
+      // Front camera is mirrored: cx<0.5 → face is physically RIGHT, cx>0.5 → LEFT.
+      // Dead-zone (|err|<0.10): face close enough to center — don't move.
+      // Proportional turns: error magnitude → exact motor duration in ms.
+      //   Firmware now supports "LEFT:NNN" (60–1200 ms) so each correction is
+      //   sized to the actual offset — no more overshooting on small deviations.
+      // Cooldown = turn duration + 220 ms settle buffer before next correction.
+      const err=cx-0.5; // positive → LEFT, negative → RIGHT (mirrored cam)
+      const absErr=Math.abs(err);
+      if(absErr<0.10){
+        // Face is centered — just update eye dir
+        if(_ftZoneH!=='CENTER'){_ftZoneH='CENTER';_faceSetEyeDir('center');}
+      }else if(Date.now()>_ftHCooldown){
+        const dir=err>0?'LEFT':'RIGHT';
+        // Map error → duration: gentle curve so small offsets get a short nudge
+        // and large offsets get up to ~500 ms.  Clamped to firmware's 60–1200 ms.
+        const dur=Math.round(Math.min(500, Math.max(80, absErr * 1100)));
+        _ftZoneH=dir; _ftHCooldown=Date.now()+dur+220;
+        _faceSetEyeDir(dir==='LEFT'?'left':'right');
+        if(robotState!=='SPEAKING') sendBLECommand(dir+':'+dur);
       }
       _ftDot.className='locked'; // face locked
     }else{
       _ftNoFace++;
-      if(_ftNoFace>12){
-        _ftNoFace=0;
+      if(_ftNoFace===10){
+        // Just lost the face — return servo to center
         if(_ftZoneV!=='CENTER'){_ftZoneV='CENTER';sendBLECommand('LOOK_CENTER');}
         if(_ftZoneH!=='CENTER'){_ftZoneH='CENTER';_faceSetEyeDir('center');}
         _ftDot.className='active'; // searching
+      }
+      // Face-search sweep: every ~20 frames (~3 s at 150 ms/frame) do a short
+      // rotation sweep to scan for a face. Alternate direction each sweep.
+      // Use a short 200 ms timed turn so the sweep is a gentle nudge, not a full spin.
+      if(_ftNoFace>10 && _ftNoFace%20===0 && robotState!=='SPEAKING'){
+        _ftScanStep++;
+        if(_ftScanStep%4===0) _ftScanDir*=-1; // flip direction every 4 sweeps
+        sendBLECommand((_ftScanDir>0?'LEFT':'RIGHT')+':200');
       }
     }
   }
@@ -2017,15 +2057,17 @@
     source.connect(proc); proc.connect(sink);
 
     // ── Tuning knobs ─────────────────────────────────────────
-    const SPEECH_THRESHOLD   = 0.018; // RMS to count as speech
-    const START_FRAMES       = 2;     // consecutive loud frames  → activityStart
-    const END_FRAMES         = 8;     // consecutive silent frames → activityEnd (~350 ms)
-    const ECHO_TAIL_MS       = 200;   // ignore mic right after AI stops (echo decay)
-    const BARGE_IN_FRAMES    = 3;
-    const BARGE_IN_MULT      = 2.0;
-    const BARGE_IN_MIN_RMS   = 0.025;
-    const BARGE_IN_SETTLE_MS = 300;
-    const BARGE_IN_COOLDOWN  = 1000;
+    const SPEECH_THRESHOLD   = 0.038; // RMS floor — must be louder than this to even consider
+    const NOISE_RATIO        = 3.5;   // effective threshold = max(SPEECH_THRESHOLD, noiseFloor×NOISE_RATIO)
+                                      // adapts to ambient noise so a noisy room won't false-trigger
+    const START_FRAMES       = 5;     // consecutive loud frames → activityStart (~115 ms sustained speech)
+    const END_FRAMES         = 14;    // consecutive silent frames → activityEnd (~320 ms pause)
+    const ECHO_TAIL_MS       = 450;   // ignore mic right after AI stops (speaker echo + room decay)
+    const BARGE_IN_FRAMES    = 4;
+    const BARGE_IN_MULT      = 2.8;
+    const BARGE_IN_MIN_RMS   = 0.040;
+    const BARGE_IN_SETTLE_MS = 400;
+    const BARGE_IN_COOLDOWN  = 1200;
 
     let noiseFloor = 0.01;
     let userSpeaking = false, speechFrames = 0, silenceFrames = 0;
@@ -2097,7 +2139,10 @@
       // when the user's turn begins and ends — no guessing.
       geminiWs.send(pcm.buffer);
 
-      if(rms>SPEECH_THRESHOLD){
+      // Effective threshold adapts to ambient noise so a loud room
+      // doesn't false-trigger — must be clearly louder than background.
+      const effectiveThresh=Math.max(SPEECH_THRESHOLD, noiseFloor*NOISE_RATIO);
+      if(rms>effectiveThresh){
         silenceFrames=0;
         speechFrames=Math.min(speechFrames+1,START_FRAMES+2);
         if(!userSpeaking&&speechFrames>=START_FRAMES){
