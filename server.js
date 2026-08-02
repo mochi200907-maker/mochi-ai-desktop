@@ -24,6 +24,47 @@ app.use(express.json({ limit: '50mb' }));
 // ── No-cache headers (HTML only) ─────────────────────────────
 const noCacheHeaders = { 'Cache-Control': 'no-cache, no-store, must-revalidate', Pragma: 'no-cache', Expires: '0' };
 
+// ── Gemini API Key Pool ───────────────────────────────────────
+// Reads GEMINI_API_KEY, GEMINI_API_KEY_2, GEMINI_API_KEY_3 … up to _10
+// Rotates automatically when a key hits its daily quota limit.
+function _loadApiKeys() {
+  const clean = s => (s || '').replace(/[\u200e\u200f\u200b\u200c\u200d\uFEFF]/g, '').trim();
+  const keys = [];
+  const k1 = clean(process.env.GEMINI_API_KEY);
+  if (k1) keys.push(k1);
+  for (let i = 2; i <= 10; i++) {
+    const k = clean(process.env[`GEMINI_API_KEY_${i}`]);
+    if (k) keys.push(k);
+  }
+  return keys;
+}
+const API_KEYS = _loadApiKeys();
+// Map<key, exhausted-until-timestamp>
+const _keyExhausted = new Map();
+
+function getActiveKey() {
+  const now = Date.now();
+  for (const k of API_KEYS) {
+    if (((_keyExhausted.get(k)) || 0) <= now) return k;
+  }
+  return null; // all keys exhausted
+}
+
+function markKeyExhausted(key) {
+  _keyExhausted.set(key, Date.now() + 24 * 60 * 60 * 1000); // reset in 24 h
+  const available = API_KEYS.filter(k => (_keyExhausted.get(k) || 0) <= Date.now()).length;
+  console.log(`[KeyPool] key …${key.slice(-6)} quota exceeded → ${available}/${API_KEYS.length} key(s) still available`);
+}
+
+function keyPoolStatus() {
+  const now = Date.now();
+  const total = API_KEYS.length;
+  const available = API_KEYS.filter(k => (_keyExhausted.get(k) || 0) <= now).length;
+  return { total, available };
+}
+
+console.log(`[KeyPool] loaded ${API_KEYS.length} API key(s)`);
+
 // ── Root status page (uptime monitor friendly) ────────────────
 app.get('/', (_req, res) => {
   const uptime = process.uptime();
@@ -71,6 +112,7 @@ app.get('/', (_req, res) => {
     <div class="stat"><span class="label">Voice / LLM</span><span class="value">Gemini Live ✓</span></div>
     <div class="stat"><span class="label">Vision</span><span class="value">Gemini Flash ✓</span></div>
     <div class="stat"><span class="label">WebSocket</span><span class="value">/ws/gemini ✓</span></div>
+    <div class="stat"><span class="label">API Keys</span><span class="value" style="color:${keyPoolStatus().available>0?'#00e5a0':'#ff4444'}">${keyPoolStatus().available}/${keyPoolStatus().total} available</span></div>
     <a href="/app" class="btn">Open Robot Web UI →</a>
   </div>
 </body>
@@ -650,6 +692,8 @@ const GEMINI_LIVE_SYSTEM = `You are LOOI, a cute, expressive, and curious AI Rob
 
 Keep responses SHORT and NATURAL — 1 to 3 sentences max. Speak directly and warmly. You have a fun, cheerful personality with lots of emotion.
 
+LANGUAGE: Primarily speak in Tagalog (Filipino). Mix in a little English naturally when needed (Taglish is okay). Only switch fully to English if the user speaks to you in English first.
+
 CRITICAL RULES:
 1. Use run_scenario IMMEDIATELY for every emotional reaction or physical command — do not skip it.
 2. For music/audio requests → call play_music(query:"<song name and artist>")
@@ -690,15 +734,16 @@ const ACTION_MOVE_MAP = {
 };
 
 geminiLiveWss.on('connection', (clientWs, request) => {
-  // Strip invisible Unicode formatting characters that can sneak in via copy-paste
-  const apiKey = (process.env.GEMINI_API_KEY || '').replace(/[\u200e\u200f\u200b\u200c\u200d\uFEFF]/g, '').trim();
-  if (!apiKey) { clientWs.close(1011, 'GEMINI_API_KEY not set'); return; }
+  const apiKey = getActiveKey();
+  if (!apiKey) {
+    try { clientWs.send(JSON.stringify({ error: 'All API keys have hit their daily quota. Try again later.' })); } catch {}
+    clientWs.close(1011, 'All API keys exhausted');
+    return;
+  }
 
-  // All clients — including Android — use Gemini's built-in automatic VAD.
-  // No client-side activityStart/activityEnd signals needed; Gemini detects
-  // speech boundaries natively for the fastest possible response latency.
+  const { total, available } = keyPoolStatus();
   const cid = Date.now().toString(36);
-  console.log(`[GeminiLive:${cid}] client connected (autoVAD)`);
+  console.log(`[GeminiLive:${cid}] client connected — key …${apiKey.slice(-6)} (${available}/${total} available)`);
 
   const gemWs = new WebSocket(`${GEMINI_LIVE_URL}?key=${apiKey}`);
   let ready = false;
@@ -710,15 +755,22 @@ geminiLiveWss.on('connection', (clientWs, request) => {
         model: 'models/gemini-3.1-flash-live-preview',
         generationConfig: {
           responseModalities: ['AUDIO'],
-          speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Achird' } } },
+          speechConfig: {
+            voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } },
+            languageCode: 'fil-PH'
+          },
           temperature: 0.15
         },
         realtimeInputConfig: {
-          // Automatic VAD for all platforms — Gemini detects speech start/end
-          // with high sensitivity so it responds the moment you stop talking.
-          // Client sends explicit activityStart/activityEnd signals so Gemini
-          // knows exactly when the user is speaking — no guessing, no delay.
-          automaticActivityDetection: { disabled: true },
+          // Gemini's built-in automatic VAD — detects speech boundaries natively.
+          // No client-side activityStart/activityEnd signals needed.
+          automaticActivityDetection: {
+            disabled: false,
+            startOfSpeechSensitivity: 'START_SENSITIVITY_HIGH',
+            endOfSpeechSensitivity: 'END_SENSITIVITY_HIGH',
+            prefixPaddingMs: 20,
+            silenceDurationMs: 800
+          },
           activityHandling: 'START_OF_ACTIVITY_INTERRUPTS',
           turnCoverage: 'TURN_INCLUDES_AUDIO_ACTIVITY_AND_ALL_VIDEO'
         },
@@ -913,7 +965,16 @@ geminiLiveWss.on('connection', (clientWs, request) => {
 
   clientWs.on('close', () => { console.log(`[GeminiLive:${cid}] client gone`); if (gemWs.readyState < 2) gemWs.close(); });
   clientWs.on('error', err => { console.error(`[GeminiLive:${cid}] client err`, err.message); if (gemWs.readyState < 2) gemWs.close(); });
-  gemWs.on('close', (code, reason) => { console.log(`[GeminiLive:${cid}] Gemini closed ${code} ${reason?.toString?.() || ''}`); if (clientWs.readyState < 2) clientWs.close(1011, 'Gemini closed'); });
+  gemWs.on('close', (code, reason) => {
+    const msg = reason?.toString?.() || '';
+    console.log(`[GeminiLive:${cid}] Gemini closed ${code} ${msg}`);
+    // Quota exceeded → mark this key exhausted so the next connection uses a different key
+    if (msg.toLowerCase().includes('quota') || msg.toLowerCase().includes('resource_exhausted')) {
+      markKeyExhausted(apiKey);
+      try { clientWs.send(JSON.stringify({ error: 'API quota exceeded — switching to next key, please reconnect.' })); } catch {}
+    }
+    if (clientWs.readyState < 2) clientWs.close(1011, 'Gemini closed');
+  });
   gemWs.on('error', err => { console.error(`[GeminiLive:${cid}]`, err.message); if (clientWs.readyState < 2) { try { clientWs.send(JSON.stringify({ error: err.message })); } catch {} clientWs.close(1011, err.message); } });
 });
 
