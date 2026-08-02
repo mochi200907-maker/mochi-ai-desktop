@@ -1762,8 +1762,9 @@
       }
 
       // ── Horizontal: body rotation + eye direction ─────────
+      // Front camera is mirrored — cx<0.33 means face is physically to the RIGHT.
       // Don't spin the body while robot is speaking — it looks weird.
-      const zh=cx<0.33?'LEFT':cx>0.67?'RIGHT':'CENTER';
+      const zh=cx<0.33?'RIGHT':cx>0.67?'LEFT':'CENTER';
       if(zh!=='CENTER'&&zh!==_ftZoneH&&Date.now()>_ftHCooldown){
         _ftZoneH=zh; _ftHCooldown=Date.now()+900;
         if(robotState!=='SPEAKING')sendBLECommand(zh); // rotate body
