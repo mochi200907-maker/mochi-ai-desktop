@@ -1614,7 +1614,7 @@
     if(audioCtx&&audioCtx.state==='suspended')audioCtx.resume().catch(()=>{});
     if(!micStream&&audioCtx&&geminiProc){
       const gen=_micGen;
-      navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true,channelCount:1}})
+      navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:false,channelCount:1,sampleRate:{ideal:48000},sampleSize:16}})
       .then(stream=>{
         if(gen!==_micGen){stream.getTracks().forEach(t=>t.stop());return;}
         micStream=stream;
@@ -1927,17 +1927,28 @@
 
   async function initAudio(){
     if('audioSession' in navigator){try{navigator.audioSession.type='play-and-record';}catch(_){}}
-    micStream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true,channelCount:1}});
+    // High-quality mic — disable AGC so the compressor below has full control
+    micStream=await navigator.mediaDevices.getUserMedia({audio:{
+      echoCancellation:true,
+      noiseSuppression:true,
+      autoGainControl:false,
+      channelCount:1,
+      sampleRate:{ideal:48000},
+      sampleSize:16
+    }});
     audioCtx=new(window.AudioContext||window.webkitAudioContext)({latencyHint:'interactive'});
     try{await audioCtx.resume();}catch(_){}
     if('audioSession' in navigator){try{navigator.audioSession.type='play-and-record';}catch(_){}}
     voiceGain=audioCtx.createGain(); voiceGain.gain.value=1.0;
-    const highPass=audioCtx.createBiquadFilter(); highPass.type='highpass'; highPass.frequency.value=80; highPass.Q.value=0.7;
-    const presence=audioCtx.createBiquadFilter(); presence.type='peaking'; presence.frequency.value=2500; presence.Q.value=0.8; presence.gain.value=3;
+    // Voice EQ: roll off sub-bass rumble, boost speech presence band, gentle treble air
+    const highPass=audioCtx.createBiquadFilter(); highPass.type='highpass'; highPass.frequency.value=100; highPass.Q.value=0.5;
+    const presence=audioCtx.createBiquadFilter(); presence.type='peaking'; presence.frequency.value=3000; presence.Q.value=0.9; presence.gain.value=4;
+    const airShelf=audioCtx.createBiquadFilter(); airShelf.type='highshelf'; airShelf.frequency.value=8000; airShelf.gain.value=2;
+    // Compressor: transparent, fast attack to catch consonants, slow release to avoid pumping
     const voiceCompressor=audioCtx.createDynamicsCompressor();
-    voiceCompressor.threshold.value=-18; voiceCompressor.knee.value=12; voiceCompressor.ratio.value=3;
-    voiceCompressor.attack.value=0.003; voiceCompressor.release.value=0.25;
-    voiceGain.connect(highPass); highPass.connect(presence); presence.connect(voiceCompressor); voiceCompressor.connect(audioCtx.destination);
+    voiceCompressor.threshold.value=-24; voiceCompressor.knee.value=10; voiceCompressor.ratio.value=4;
+    voiceCompressor.attack.value=0.002; voiceCompressor.release.value=0.15;
+    voiceGain.connect(highPass); highPass.connect(presence); presence.connect(airShelf); airShelf.connect(voiceCompressor); voiceCompressor.connect(audioCtx.destination);
     ttsAnalyser=audioCtx.createAnalyser(); ttsAnalyser.fftSize=256; ttsAnalyser.smoothingTimeConstant=0.25;
     presence.connect(ttsAnalyser);
     const source=audioCtx.createMediaStreamSource(micStream);
@@ -2050,32 +2061,31 @@
 
   function initGeminiLive(source){
     micSource=source;
-    const SR=audioCtx.sampleRate,TR=16000;
-    const proc=audioCtx.createScriptProcessor(1024,1,1);
+    const SR=audioCtx.sampleRate, TR=16000;
+    // Use 2048-frame buffer for smoother resampling at 48 kHz → 16 kHz
+    const proc=audioCtx.createScriptProcessor(2048,1,1);
     geminiProc=proc;
     const sink=audioCtx.createMediaStreamDestination();
     source.connect(proc); proc.connect(sink);
 
-    // ── Tuning knobs ─────────────────────────────────────────
-    const SPEECH_THRESHOLD   = 0.038; // RMS floor — must be louder than this to even consider
-    const NOISE_RATIO        = 3.5;   // effective threshold = max(SPEECH_THRESHOLD, noiseFloor×NOISE_RATIO)
-                                      // adapts to ambient noise so a noisy room won't false-trigger
-    const START_FRAMES       = 5;     // consecutive loud frames → activityStart (~115 ms sustained speech)
-    const END_FRAMES         = 14;    // consecutive silent frames → activityEnd (~320 ms pause)
-    const ECHO_TAIL_MS       = 450;   // ignore mic right after AI stops (speaker echo + room decay)
-    const BARGE_IN_FRAMES    = 4;
-    const BARGE_IN_MULT      = 2.8;
-    const BARGE_IN_MIN_RMS   = 0.040;
-    const BARGE_IN_SETTLE_MS = 400;
-    const BARGE_IN_COOLDOWN  = 1200;
+    // Visual LISTENING threshold — purely for UI feedback, no signals sent to Gemini
+    const LISTEN_THRESHOLD   = 0.018; // RMS to show LISTENING state
+    const LISTEN_END_FRAMES  = 10;    // silent frames before reverting to IDLE (~230 ms)
 
-    let noiseFloor = 0.01;
-    let userSpeaking = false, speechFrames = 0, silenceFrames = 0;
+    // Barge-in: purely local — detect when user voice overwhelms AI playback
+    // and cut the speaker immediately. No VAD signals needed (Gemini handles VAD).
+    const BARGE_IN_FRAMES    = 4;
+    const BARGE_IN_MULT      = 2.5;
+    const BARGE_IN_MIN_RMS   = 0.035;
+    const BARGE_IN_SETTLE_MS = 350;
+    const BARGE_IN_COOLDOWN  = 1000;
+    const ECHO_TAIL_MS       = 350;   // brief mute after AI stops so speaker echo decays
+
+    let noiseFloor = 0.008;
     let prevAiActive = false, aiSpeakStart = 0, aiEndedAt = 0;
     let bargeInFrames = 0, bargeInCooldownUntil = 0, lastBargeInTime = 0;
     let localBargeInActive = false;
-
-    function send(obj){ if(geminiWs?.readyState===WebSocket.OPEN)geminiWs.send(JSON.stringify(obj)); }
+    let listenSilenceFrames = 0;
 
     proc.onaudioprocess=(e)=>{
       const input=e.inputBuffer.getChannelData(0);
@@ -2086,21 +2096,33 @@
       const isGeminiSpeaking=audioCtx.currentTime<geminiNextStart, now=Date.now();
       const aiActive=isGeminiSpeaking||robotState==='SPEAKING';
 
-      // Track AI on/off transitions
+      // Track AI on/off transitions for barge-in and echo suppression
       if(aiActive&&!prevAiActive){
-        aiSpeakStart=now; noiseFloor=Math.max(noiseFloor,rms*0.8);
-        localBargeInActive=false; userSpeaking=false; speechFrames=0; silenceFrames=0;
+        aiSpeakStart=now;
+        localBargeInActive=false; bargeInFrames=0; listenSilenceFrames=0;
       }
       if(!aiActive&&prevAiActive){ aiEndedAt=now; bargeInFrames=0; localBargeInActive=false; }
       prevAiActive=aiActive;
 
-      // Noise floor tracking
-      if(aiActive) noiseFloor=noiseFloor*0.95+smoothedVolume*0.05;
-      else         noiseFloor=Math.max(0.004,noiseFloor*0.997);
+      // Noise floor — slow-track ambient level while AI is quiet
+      if(!aiActive) noiseFloor=Math.max(0.004, noiseFloor*0.998+smoothedVolume*0.002);
 
-      // Barge-in: user speaks louder than the AI → cut speaker immediately
+      // ── Visual LISTENING indicator (UI only, no Gemini signals) ──
+      if(!aiActive){
+        const effectiveListen=Math.max(LISTEN_THRESHOLD, noiseFloor*2.0);
+        if(rms>effectiveListen){
+          listenSilenceFrames=0;
+          if(robotState==='IDLE')robotState='LISTENING';
+        } else if(robotState==='LISTENING'){
+          listenSilenceFrames++;
+          if(listenSilenceFrames>=LISTEN_END_FRAMES){ robotState='IDLE'; listenSilenceFrames=0; }
+        }
+      }
+
+      // Barge-in: user speaks louder than AI → cut local playback immediately.
+      // Gemini's auto-VAD will detect the speech and handle the turn on its side.
       if(isGeminiSpeaking&&!localBargeInActive){
-        const biThresh=Math.max(BARGE_IN_MIN_RMS,noiseFloor*BARGE_IN_MULT);
+        const biThresh=Math.max(BARGE_IN_MIN_RMS, noiseFloor*BARGE_IN_MULT);
         const settled=(now-aiSpeakStart)>BARGE_IN_SETTLE_MS;
         if(settled&&smoothedVolume>biThresh) bargeInFrames=Math.min(bargeInFrames+1,BARGE_IN_FRAMES+2);
         else bargeInFrames=Math.max(0,bargeInFrames-1);
@@ -2110,61 +2132,32 @@
           playbackGeneration++; geminiNextStart=0;
           activeAudioSources.forEach(s=>{try{s.stop();}catch{}}); activeAudioSources=[];
           robotState='LISTENING'; currentExpression='IDLE';
-          send({realtimeInput:{activityStart:{}}});
-          userSpeaking=true; speechFrames=0; silenceFrames=0;
-          console.log('[BargeIn] cut AI audio, sent activityStart');
+          console.log('[BargeIn] cut AI audio — Gemini auto-VAD will detect speech');
         }
       }
 
       if(!geminiWs||geminiWs.readyState!==WebSocket.OPEN)return;
 
-      // While AI is playing: only stream during barge-in
+      // Mute mic to Gemini while AI is speaking (not barge-in) to avoid feedback
       if(aiActive&&!localBargeInActive)return;
 
-      // Echo tail: brief mute after AI stops so speaker echo decays
+      // Brief echo tail after AI finishes so room decay doesn't confuse Gemini VAD
       if(!aiActive&&!localBargeInActive&&aiEndedAt>0&&(now-aiEndedAt)<ECHO_TAIL_MS)return;
 
-      // Downsample to 16 kHz PCM
+      // Downsample to 16 kHz PCM with linear interpolation
       const ratio=SR/TR, outLen=Math.floor(input.length/ratio);
       const pcm=new Int16Array(outLen);
       for(let i=0;i<outLen;i++){
-        const pos=i*ratio,idx=Math.floor(pos),frac=pos-idx;
+        const pos=i*ratio, idx=Math.floor(pos), frac=pos-idx;
         const s=Math.max(-1,Math.min(1,(input[idx]||0)+frac*((input[idx+1]||0)-(input[idx]||0))));
         pcm[i]=s<0?s*0x8000:s*0x7FFF;
       }
 
-      // ── Manual VAD ──────────────────────────────────────────
-      // Always stream PCM so Gemini receives the audio.
-      // Send activityStart/End signals so Gemini knows exactly
-      // when the user's turn begins and ends — no guessing.
+      // Stream clean 16 kHz PCM — Gemini auto-VAD handles speech detection
       geminiWs.send(pcm.buffer);
-
-      // Effective threshold adapts to ambient noise so a loud room
-      // doesn't false-trigger — must be clearly louder than background.
-      const effectiveThresh=Math.max(SPEECH_THRESHOLD, noiseFloor*NOISE_RATIO);
-      if(rms>effectiveThresh){
-        silenceFrames=0;
-        speechFrames=Math.min(speechFrames+1,START_FRAMES+2);
-        if(!userSpeaking&&speechFrames>=START_FRAMES){
-          userSpeaking=true;
-          send({realtimeInput:{activityStart:{}}});
-          if(robotState==='IDLE')robotState='LISTENING';
-          console.log('[VAD] activityStart');
-        }
-      }else{
-        speechFrames=Math.max(0,speechFrames-1);
-        if(userSpeaking){
-          silenceFrames++;
-          if(silenceFrames>=END_FRAMES){
-            userSpeaking=false; silenceFrames=0;
-            send({realtimeInput:{activityEnd:{}}});
-            console.log('[VAD] activityEnd');
-          }
-        }
-      }
     };
     connectGeminiLive();
-    console.log('[GeminiLive] audio pipeline ready, sampleRate:',SR);
+    console.log('[GeminiLive] audio pipeline ready, sampleRate:',SR,'→ 16 kHz PCM (Gemini auto-VAD)');
   }
 
   // ── TTS ANALYSER for mouth animation tracking ─────────────
