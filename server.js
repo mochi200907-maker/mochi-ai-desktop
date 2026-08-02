@@ -699,10 +699,8 @@ geminiLiveWss.on('connection', (clientWs, request) => {
   // client gates audio sending on !aiActive (audio only flows when the AI
   // is silent), so Gemini's VAD never hears speaker echo on any platform.
   const reqUrl = new URL(request.url, 'http://localhost');
-  const isAndroidClient = reqUrl.searchParams.get('platform') === 'android';
-
   const cid = Date.now().toString(36);
-  console.log(`[GeminiLive:${cid}] client connected (${isAndroidClient ? 'Android/manualVAD' : 'desktop/autoVAD'})`);
+  console.log(`[GeminiLive:${cid}] client connected (autoVAD/Gemini-native)`);
 
   const gemWs = new WebSocket(`${GEMINI_LIVE_URL}?key=${apiKey}`);
   let ready = false;
@@ -718,18 +716,16 @@ geminiLiveWss.on('connection', (clientWs, request) => {
           temperature: 0.15
         },
         realtimeInputConfig: {
-          // Android: disable server-side VAD — client sends activityStart/activityEnd
-          // signals manually so only confirmed user speech triggers interrupts.
-          // Desktop: automatic VAD with AEC handles echo suppression natively.
-          automaticActivityDetection: isAndroidClient
-            ? { disabled: true }
-            : {
-                disabled: false,
-                startOfSpeechSensitivity: 'START_SENSITIVITY_HIGH',
-                endOfSpeechSensitivity: 'END_SENSITIVITY_LOW',
-                prefixPaddingMs: 200,
-                silenceDurationMs: 400
-              },
+          // All clients use Gemini's native VAD — no client-side manual signaling.
+          // Gemini detects speech start/end itself, so the first utterance always
+          // triggers a response without needing to speak twice.
+          automaticActivityDetection: {
+            disabled: false,
+            startOfSpeechSensitivity: 'START_SENSITIVITY_HIGH',
+            endOfSpeechSensitivity: 'END_SENSITIVITY_LOW',
+            prefixPaddingMs: 200,
+            silenceDurationMs: 400
+          },
           activityHandling: 'START_OF_ACTIVITY_INTERRUPTS',
           // TURN_INCLUDES_AUDIO_ACTIVITY_AND_ALL_VIDEO: video frames sent during
           // the turn are included alongside audio, enabling continuous live vision.
