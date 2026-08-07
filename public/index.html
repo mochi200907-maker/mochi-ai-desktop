@@ -802,11 +802,6 @@
     }
     .waveform-bar { width: 4px; height: 6px; background: #00d2ff; border-radius: 3px; transform-origin: center; transition: height 0.08s ease, background 0.3s ease; }
     #state-text { color: #00d2ff; font-size: 11px; font-weight: bold; text-transform: uppercase; letter-spacing: 2px; margin-left: 6px; opacity: 0.7; }
-    #ft-dot { width:7px;height:7px;border-radius:50%;background:#444;margin-left:4px;transition:background .4s,box-shadow .4s;flex-shrink:0; }
-    #ft-dot.loading { background:#ff9900;box-shadow:0 0 6px #ff990088;animation:pulse 1s infinite; }
-    #ft-dot.active  { background:#00ff99;box-shadow:0 0 8px #00ff9988; }
-    #ft-dot.locked  { background:#00d2ff;box-shadow:0 0 8px #00d2ff88; }
-
     /* ── TRANSCRIPT / ERROR ── */
     #transcript-bar {
       position: absolute; bottom: max(16px,env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%);
@@ -906,7 +901,6 @@
       <div class="waveform-bar" id="wb6"></div>
       <div class="waveform-bar" id="wb7"></div>
       <span id="state-text">IDLE</span>
-      <span id="ft-dot" title="Face tracking"></span>
     </div>
     <div id="transcript-bar"></div>
     <div id="error-toast"></div>
@@ -1586,7 +1580,7 @@
     if(geminiWs?.readyState===WebSocket.OPEN){
       geminiWs.send(JSON.stringify({navigateResult:found?`Successfully arrived at the ${target}`:`I looked around but couldn't find the ${target}. Can you point me toward it?`,toolCallId}));
     }
-    startFrontCamera().then(()=>{startFaceTracking();}).catch(()=>{});
+     startFrontCamera().catch(()=>{});
     setTimeout(()=>{robotState='IDLE';if(!found)currentExpression='IDLE';sendBLECommand('LED_OFF');},1500);
   }
 
@@ -1707,14 +1701,6 @@
     ensureWarmCamera().catch(()=>{});
     _faceShowWake(); // Wake animation on startup
   });
-  document.getElementById('voiceonly-btn').addEventListener('click',async()=>{
-    document.getElementById('start-overlay').style.display='none';
-    await initAudio();
-    requestAnimationFrame(renderLoop);
-    startFaceTracking();
-    ensureWarmCamera().catch(()=>{});
-    _faceShowWake(); // Wake animation on startup
-  });
 
   let _lastTap=0;
   document.getElementById('robot-screen').addEventListener('touchend',e=>{
@@ -1726,155 +1712,6 @@
   function toggleFS(){
     if(!document.fullscreenElement)document.documentElement.requestFullscreen({navigationUI:'hide'}).catch(()=>{});
     else document.exitFullscreen().catch(()=>{});
-  }
-
-  // ── FACE TRACKING (MediaPipe FaceDetector) ───────────────
-  // Detects faces via front camera and physically moves LOOI:
-  //   • Head servo  → LOOK_UP / LOOK_DOWN / LOOK_CENTER (vertical)
-  //   • Drive motors → proportional LEFT/RIGHT body rotation
-  //   • LOOI eye direction mirrors tracking in the UI
-  //   • Scans for a face when none detected
-  let _ftStream=null,_ftVideo=null,_ftTimer=null,_ftRunning=false;
-  let _ftZoneV=null,_ftZoneH=null,_ftNoFace=0,_ftHCooldown=0;
-  let _ftDetector=null;
-  // Face-search state
-  let _ftScanDir=1,_ftScanStep=0;
-  const _ftCanvas=document.createElement('canvas');
-  _ftCanvas.width=320; _ftCanvas.height=240;
-  const _ftCtx=_ftCanvas.getContext('2d',{willReadFrequently:true});
-  const _ftDot=document.getElementById('ft-dot');
-
-  async function _loadMPDetector(){
-    if(_ftDetector)return _ftDetector;
-    _ftDot.className='loading';
-    try{
-      // Load MediaPipe tasks-vision bundle (works on Android Chrome + iOS Safari)
-      const vision=await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs');
-      const fs=await vision.FilesetResolver.forVisionTasks(
-        'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm'
-      );
-      _ftDetector=await vision.FaceDetector.createFromOptions(fs,{
-        baseOptions:{
-          modelAssetPath:'https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite',
-          delegate:'GPU'
-        },
-        runningMode:'VIDEO',
-        minDetectionConfidence:0.5,
-        minSuppressionThreshold:0.3
-      });
-      console.log('[FaceTrack] MediaPipe detector ready');
-      return _ftDetector;
-    }catch(e){
-      console.warn('[FaceTrack] MediaPipe load failed:',e.message);
-      _ftDot.className=''; return null;
-    }
-  }
-
-  function _ftApplyResult(faces){
-    if(faces.length>0){
-      _ftNoFace=0; _ftScanStep=0;
-      const bb=faces[0].boundingBox; // pixels on _ftCanvas (320×240)
-      const cx=(bb.originX+bb.width/2)/320;
-      const cy=(bb.originY+bb.height/2)/240;
-
-      // ── Vertical: head servo ──────────────────────────────
-      const zv=cy<0.38?'UP':cy>0.62?'DOWN':'CENTER';
-      if(zv!==_ftZoneV){
-        _ftZoneV=zv;
-        sendBLECommand(zv==='UP'?'LOOK_UP':zv==='DOWN'?'LOOK_DOWN':'LOOK_CENTER');
-      }
-
-      // ── Horizontal: proportional body rotation ────────────
-      // Front camera is mirrored: cx<0.5 → face is physically RIGHT, cx>0.5 → LEFT.
-      // Dead-zone (|err|<0.10): face close enough to center — don't move.
-      // Proportional turns: error magnitude → exact motor duration in ms.
-      //   Firmware now supports "LEFT:NNN" (60–1200 ms) so each correction is
-      //   sized to the actual offset — no more overshooting on small deviations.
-      // Cooldown = turn duration + 220 ms settle buffer before next correction.
-      const err=cx-0.5; // positive → LEFT, negative → RIGHT (mirrored cam)
-      const absErr=Math.abs(err);
-      if(absErr<0.10){
-        // Face is centered — just update eye dir
-        if(_ftZoneH!=='CENTER'){_ftZoneH='CENTER';_faceSetEyeDir('center');}
-      }else if(Date.now()>_ftHCooldown){
-        const dir=err>0?'LEFT':'RIGHT';
-        // Map error → duration: gentle curve so small offsets get a short nudge
-        // and large offsets get up to ~500 ms.  Clamped to firmware's 60–1200 ms.
-        const dur=Math.round(Math.min(500, Math.max(80, absErr * 1100)));
-        _ftZoneH=dir; _ftHCooldown=Date.now()+dur+220;
-        _faceSetEyeDir(dir==='LEFT'?'left':'right');
-        if(robotState!=='SPEAKING') sendBLECommand(dir+':'+dur);
-      }
-      _ftDot.className='locked'; // face locked
-    }else{
-      _ftNoFace++;
-      if(_ftNoFace===10){
-        // Just lost the face — return servo to center
-        if(_ftZoneV!=='CENTER'){_ftZoneV='CENTER';sendBLECommand('LOOK_CENTER');}
-        if(_ftZoneH!=='CENTER'){_ftZoneH='CENTER';_faceSetEyeDir('center');}
-        _ftDot.className='active'; // searching
-      }
-      // Face-search sweep: every ~20 frames (~3 s at 150 ms/frame) do a short
-      // rotation sweep to scan for a face. Alternate direction each sweep.
-      // Use a short 200 ms timed turn so the sweep is a gentle nudge, not a full spin.
-      if(_ftNoFace>10 && _ftNoFace%20===0 && robotState!=='SPEAKING'){
-        _ftScanStep++;
-        if(_ftScanStep%4===0) _ftScanDir*=-1; // flip direction every 4 sweeps
-        sendBLECommand((_ftScanDir>0?'LEFT':'RIGHT')+':200');
-      }
-    }
-  }
-
-  async function startFaceTracking(){
-    if(_ftRunning)return;
-    try{
-      const ok=await startFrontCamera();
-      if(!ok){console.warn('[FaceTrack] front camera unavailable');return;}
-      _ftStream=_frontStream; _ftVideo=_frontVideo;
-
-      // Try MediaPipe first; fall back to native FaceDetector API (Chrome flags)
-      let useNative=false;
-      if(!_ftDetector){
-        if('FaceDetector' in window){useNative=true;}
-        else{await _loadMPDetector();}
-      }
-      if(!_ftDetector&&!useNative){_ftDot.className='';console.warn('[FaceTrack] no detector available');return;}
-
-      _ftZoneV=null; _ftZoneH=null; _ftNoFace=0; _ftRunning=true;
-      _ftDot.className='active';
-      console.log('[FaceTrack] started ('+(useNative?'native FaceDetector':'MediaPipe')+') — LOOI will follow your face 👁');
-
-      const nativeDetector=useNative?new FaceDetector({fastMode:true,maxDetectedFaces:1}):null;
-
-      function loop(){
-        if(!_ftRunning||!_ftStream||_ftStream!==_frontStream){_ftRunning=false;_ftDot.className='';return;}
-        if(!_ftVideo||_ftVideo.readyState<2){_ftTimer=setTimeout(loop,200);return;}
-
-        if(useNative){
-          nativeDetector.detect(_ftVideo).then(faces=>{
-            _ftApplyResult(faces.map(f=>({boundingBox:{
-              originX:f.boundingBox.x,originY:f.boundingBox.y,
-              width:f.boundingBox.width,height:f.boundingBox.height
-            }})));
-          }).catch(()=>{}).finally(()=>{if(_ftRunning)_ftTimer=setTimeout(loop,200);});
-        }else{
-          try{
-            // Draw raw (unmirrored) frame so LEFT/RIGHT match physical space
-            _ftCtx.drawImage(_ftVideo,0,0,320,240);
-            const result=_ftDetector.detectForVideo(_ftCanvas,performance.now());
-            _ftApplyResult(result.detections||[]);
-          }catch(_){}
-          if(_ftRunning)_ftTimer=setTimeout(loop,150);
-        }
-      }
-      loop();
-    }catch(err){_ftRunning=false;_ftDot.className='';console.warn('[FaceTrack] error:',err.message);}
-  }
-
-  function stopFaceTracking(){
-    _ftRunning=false; clearTimeout(_ftTimer); _ftDot.className='';
-    _ftZoneV=null; _ftZoneH=null;
-    console.log('[FaceTrack] stopped');
   }
 
   // Warm camera for fast first capture
