@@ -610,7 +610,9 @@ const ROBOT_TOOLS = [{
             type: 'STRING',
             description: 'The robot action or expression to perform.',
             enum: [
-             'forward', 'backward', 'left', 'right', 'look_up', 'look_down', 'look_center',
+              'follow_target', 'take_picture', 'eating', 'drinking',
+              'angry', 'loving', 'happy', 'sad', 'wink', 'news', 'scanning', 'idle',
+              'forward', 'backward', 'left', 'right', 'look_up', 'look_down', 'look_center',
               'shocked', 'kiss', 'question'
             ]
           },
@@ -625,16 +627,17 @@ const ROBOT_TOOLS = [{
             type: 'STRING',
             description: 'Explicit movement command.',
             enum: ['NONE','FORWARD','BACKWARD','LEFT','RIGHT','LOOK_UP','LOOK_DOWN','LOOK_CENTER']
-          }
-        },
-        required: ['action']
-                  speed: {
+          },
+          speed: {
             type: 'INTEGER',
             description: 'Motor speed 0-255. Default 200. Use 60-120 for slow/careful, 180-220 normal, 230-255 fast.',
             minimum: 0,
             maximum: 255
           }
         },
+        required: ['action']
+      },
+    },
     {
       name: 'play_music',
       description: 'Search and play a music track or song. Call when the user asks to listen to or play a song.',
