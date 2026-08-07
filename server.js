@@ -629,8 +629,13 @@ const ROBOT_TOOLS = [{
           }
         },
         required: ['action']
-      }
-    },
+                  speed: {
+            type: 'INTEGER',
+            description: 'Motor speed 0-255. Default 200. Use 60-120 for slow/careful, 180-220 normal, 230-255 fast.',
+            minimum: 0,
+            maximum: 255
+          }
+        },
     {
       name: 'play_music',
       description: 'Search and play a music track or song. Call when the user asks to listen to or play a song.',
@@ -704,7 +709,7 @@ CRITICAL RULES:
 7. For navigation (go to box, find ball, approach chair) → call navigate_to(target:"<object name>")
 8. NEVER describe visuals from memory — always use capture_photo() first.
 9. When asked who made you / who created you / who is your creator → say April Manalo made you.
-
+10. You can control movement speed with the speed parameter (0-255). Slow/careful: 60-120. Normal: 180-220. Fast: 230-255. Default is 200 if not specified.
 Examples:
 - User says something nice → run_scenario(action:"loving", led:"LED_PINK")
 - User says "move forward" → run_scenario(action:"forward")
@@ -717,7 +722,12 @@ Examples:
 - User says "go to the box" → navigate_to(target:"box")
 - User surprises you → run_scenario(action:"shocked")
 - User asks for a kiss → run_scenario(action:"kiss")
-- User asks a question → run_scenario(action:"question")`;
+- User asks a question → run_scenario(action:"question")
+10. You can control movement speed with the speed parameter (0-255).
+    - Slow / careful: 60-120
+    - Normal: 180-220
+    - Fast: 230-255
+    Default is 200 if not specified.`;
 
 const ACTION_FACE_MAP = {
   follow_target: 'SCANNING', take_picture: 'CAMERA', eating: 'BURGER', drinking: 'JUICE',
@@ -802,10 +812,11 @@ geminiLiveWss.on('connection', (clientWs, request) => {
             : (ACTION_MOVE_MAP[actionKey] || 'NONE')
           ).toUpperCase();
           const led = (args.led || 'NONE').toUpperCase();
+          const speed = (args.speed !== undefined) ? Math.max(0, Math.min(255, Math.round(args.speed))) : undefined;
           if (clientWs.readyState === WebSocket.OPEN) {
-            clientWs.send(JSON.stringify({ robotAction: { face, move, led } }));
+            clientWs.send(JSON.stringify({ robotAction: { face, move, led, speed } }));
           }
-          console.log(`[GeminiLive:${cid}] run_scenario → face:${face} move:${move} led:${led}`);
+          console.log(`[GeminiLive:${cid}] run_scenario → face:${face} move:${move} led:${led} speed:${speed}`);
           immediateResponses.push({ id: fc.id, name: fc.name, response: { output: 'executed' } });
         }
 
