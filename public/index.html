@@ -1736,11 +1736,13 @@
   }
 
   let bleWriteQueue=Promise.resolve();
-  function sendDirectionalMove(cmd){
+  function sendDirectionalMove(cmd, speed){
     cmd=String(cmd||'').trim().toUpperCase();
     if(!cmd||cmd==='NONE')return;
-    if(cmd==='LEFT'||cmd==='RIGHT'){sendBLECommand(cmd);setTimeout(()=>sendBLECommand('FORWARD'),550);}
-    else sendBLECommand(cmd);
+    const speedSuffix = (typeof speed==='number' && speed>=0 && speed<=255) ? ':'+Math.round(speed) : '';
+    const fullCmd = cmd + speedSuffix;
+    if(cmd==='LEFT'||cmd==='RIGHT'){sendBLECommand(fullCmd);setTimeout(()=>sendBLECommand('FORWARD'+speedSuffix),550);}
+    else sendBLECommand(fullCmd);
   }
   function sendBLECommand(cmd){
     cmd=String(cmd||'').trim().toUpperCase();
@@ -1831,9 +1833,9 @@
       }
       if(msg.needNavigate){await navigateToTarget(msg.target,msg.toolCallId);return;}
       if(msg.robotAction){
-        const{face,move,led}=msg.robotAction;
+        const{face,move,led,speed}=msg.robotAction;
         if(face){currentExpression=face;if(face==='CAMERA')triggerCameraCapture();}
-        sendDirectionalMove(move||'NONE');
+        sendDirectionalMove(move||'NONE', speed);
         if(led&&led!=='NONE')sendBLECommand(led); return;
       }
       if(msg.toolCancelled){
