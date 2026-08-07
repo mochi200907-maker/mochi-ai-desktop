@@ -610,9 +610,8 @@ const ROBOT_TOOLS = [{
             type: 'STRING',
             description: 'The robot action or expression to perform.',
             enum: [
-              'follow_target', 'take_picture', 'eating', 'drinking',
-              'angry', 'loving', 'happy', 'sad', 'wink', 'news', 'scanning', 'idle',
-              'forward', 'backward', 'left', 'right', 'look_up', 'look_down', 'look_center'
+             'forward', 'backward', 'left', 'right', 'look_up', 'look_down', 'look_center',
+              'shocked', 'kiss', 'question'
             ]
           },
           led: {
@@ -722,12 +721,7 @@ Examples:
 - User says "go to the box" → navigate_to(target:"box")
 - User surprises you → run_scenario(action:"shocked")
 - User asks for a kiss → run_scenario(action:"kiss")
-- User asks a question → run_scenario(action:"question")
-10. You can control movement speed with the speed parameter (0-255).
-    - Slow / careful: 60-120
-    - Normal: 180-220
-    - Fast: 230-255
-    Default is 200 if not specified.`;
+- User asks a question → run_scenario(action:"question")`;
 
 const ACTION_FACE_MAP = {
   follow_target: 'SCANNING', take_picture: 'CAMERA', eating: 'BURGER', drinking: 'JUICE',
@@ -812,7 +806,7 @@ geminiLiveWss.on('connection', (clientWs, request) => {
             : (ACTION_MOVE_MAP[actionKey] || 'NONE')
           ).toUpperCase();
           const led = (args.led || 'NONE').toUpperCase();
-          const speed = (args.speed !== undefined) ? Math.max(0, Math.min(255, Math.round(args.speed))) : undefined;
+          const speed = (args.speed !== undefined) ? Math.max(0, Math.min(255, Math.round(args.speed))) : 200;
           if (clientWs.readyState === WebSocket.OPEN) {
             clientWs.send(JSON.stringify({ robotAction: { face, move, led, speed } }));
           }
