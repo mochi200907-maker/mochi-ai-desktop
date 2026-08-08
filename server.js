@@ -283,8 +283,11 @@ async function fetchMusicResult(query) {
 async function searchWithGroq(query) {
   const groqKey = process.env.GROQ_API_KEY;
   if (!groqKey) {
+    console.error('[GroqSearch] GROQ_API_KEY is not set!');
     return 'Error: GROQ_API_KEY is not set. Please configure it in environment variables.';
   }
+
+  console.log(`[GroqSearch] Searching: "${query}"`);
 
   try {
     const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
@@ -298,22 +301,14 @@ async function searchWithGroq(query) {
         messages: [
           {
             role: 'system',
-            content: `You are a web search assistant. Your job is to search the internet for the user's query and provide accurate, factual, up-to-date information.
-
-Rules:
-1. Use web_search to find current information.
-2. Use visit_website to read full articles if needed.
-3. Use code_interpreter for any calculations or data analysis.
-4. Always cite your sources with URLs when possible.
-5. If you cannot find reliable information, say so honestly.
-6. Respond in the same language as the user's query (Tagalog/English mix is fine).`
+            content: 'You are a web search assistant. Search the internet for the user\'s query and provide accurate, factual, up-to-date information. Always cite your sources. If you cannot find reliable information, say so honestly. Respond in the same language as the user\'s query.'
           },
           {
             role: 'user',
             content: query
           }
         ],
-        temperature: 0.7,
+        temperature: 0.5,
         max_completion_tokens: 2048,
         top_p: 1,
         compound_custom: {
@@ -332,13 +327,28 @@ Rules:
     }
 
     const data = await res.json();
+
+    // DEBUG: log what Groq actually did
+    const executedTools = data.choices?.[0]?.message?.executed_tools;
+    console.log(`[GroqSearch] executed_tools:`, JSON.stringify(executedTools || 'NONE'));
+
     const answer = data.choices?.[0]?.message?.content?.trim();
 
     if (!answer) {
+      console.error('[GroqSearch] No content in response');
       return 'Pasensya na, walang nakuha sagot mula sa web search.';
     }
 
-    console.log(`[GroqSearch] answer length: ${answer.length} chars`);
+    // Check if Groq actually searched
+    const didSearch = executedTools && executedTools.length > 0 &&
+      executedTools.some(t => t.type === 'search' || t.type === 'web_search');
+
+    if (!didSearch) {
+      console.warn('[GroqSearch] WARNING: Groq did NOT perform web search!');
+      return `[NO_SEARCH_PERFORMED] ${answer}`;
+    }
+
+    console.log(`[GroqSearch] Search performed. Answer length: ${answer.length} chars`);
     return answer;
 
   } catch (err) {
@@ -799,8 +809,8 @@ CRITICAL RULES:
 8. NEVER describe visuals from memory — always use capture_photo() first.
 9. When asked who made you / who created you / who is your creator → say April Manalo made you.
 10. You can control movement speed with the speed parameter (0-255). Slow/careful: 60-120. Normal: 180-220. Fast: 230-255. Default is 200 if not specified.
-11. For ANY factual question, current events, news, "who is", "what is", "where is", or general knowledge → FIRST call search_web(query:"<topic>"), WAIT for the results to come back, THEN answer based ONLY on what the search returned.
-12. CRITICAL: The search_web tool uses Groq\'s built-in web search (web_search, code_interpreter, visit_website). It returns a complete researched answer with sources. Do NOT add made-up information. If the search says it found nothing, tell the user honestly.
+11. For ANY factual question, current events, news, "who is", "what is", "where is", or general knowledge → FIRST call search_web(query:"<topic>"), WAIT for the results, THEN answer based ONLY on what the search returned.
+12. CRITICAL RULES: The search_web tool uses Groq\'s built-in web search and returns a COMPLETE researched answer. If the result starts with [NO_SEARCH_PERFORMED] or says "Error" or "walang nakuha", tell the user honestly: "Pasensya na, hindi ako makapag-search sa web ngayon." You have ZERO knowledge of your own. EVERYTHING must come from the search result. Do NOT guess. Do NOT make up sources.
 Examples:
 - User says something nice → run_scenario(action:"loving", led:"LED_PINK")
 - User says "move forward" → run_scenario(action:"forward")
