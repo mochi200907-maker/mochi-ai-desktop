@@ -1031,6 +1031,7 @@ geminiLiveWss.on('connection', (clientWs, request) => {
             }
           })();
         }
+      }
 
       if (immediateResponses.length && gemWs.readyState === WebSocket.OPEN) {
         gemWs.send(JSON.stringify({ toolResponse: { functionResponses: immediateResponses } }));
