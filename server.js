@@ -276,53 +276,68 @@ async function fetchMusicResult(query) {
   return data;
 }
 
-// ── Wikipedia Search ────────────────────────────────────────
-async function searchWikipedia(query, getSummary = true) {
+// ── DuckDuckGo Search ───────────────────────────────────────
+async function searchDuckDuckGo(query) {
   try {
-    const searchUrl = `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&format=json&srlimit=3&origin=*`;
-    const searchRes = await fetch(searchUrl, {
-      headers: { 'User-Agent': 'LOOI-Robot/1.0' },
+    const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
+    const res = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+      },
       signal: AbortSignal.timeout(15000),
     });
-    if (!searchRes.ok) throw new Error('Search request failed');
-    const searchData = await searchRes.json();
-    const results = searchData?.query?.search;
-    if (!results || results.length === 0) {
-      return `Walang resulta sa Wikipedia para sa "${query}".`;
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const html = await res.text();
+
+    // Parse results from DuckDuckGo HTML
+    const results = [];
+    // Match .result blocks
+    const resultBlocks = html.match(/<div class="result[^"]*"[^>]*>[\s\S]*?<\/div>\s*<\/div>/g) || [];
+
+    for (const block of resultBlocks.slice(0, 5)) {
+      // Title + link
+      const titleMatch = block.match(/<a[^>]*class="result__a"[^>]*>([\s\S]*?)<\/a>/i);
+      const title = titleMatch ? titleMatch[1].replace(/<[^>]+>/g, '').trim() : '';
+
+      // Snippet
+      const snippetMatch = block.match(/<a[^>]*class="result__snippet"[^>]*>([\s\S]*?)<\/a>/i);
+      const snippet = snippetMatch ? snippetMatch[1].replace(/<[^>]+>/g, '').trim() : '';
+
+      // URL
+      const urlMatch = block.match(/<a[^>]*class="result__url"[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/i);
+      const resultUrl = urlMatch ? urlMatch[2].replace(/<[^>]+>/g, '').trim() : '';
+
+      if (title && snippet) {
+        results.push({ title, snippet, url: resultUrl });
+      }
     }
 
-    if (!getSummary) {
-      return results.map((r, i) => `${i + 1}. ${r.title}`).join('\n');
+    // Fallback: try broader regex if no results
+    if (results.length === 0) {
+      const links = html.matchAll(/<a[^>]*class="result__a"[^>]*>([\s\S]*?)<\/a>/gi);
+      const snippets = html.matchAll(/<a[^>]*class="result__snippet"[^>]*>([\s\S]*?)<\/a>/gi);
+      const titles = [...links].map(m => m[1].replace(/<[^>]+>/g, '').trim()).filter(Boolean);
+      const snips = [...snippets].map(m => m[1].replace(/<[^>]+>/g, '').trim()).filter(Boolean);
+      for (let i = 0; i < Math.min(titles.length, snips.length, 5); i++) {
+        results.push({ title: titles[i], snippet: snips[i], url: '' });
+      }
     }
 
-    // Get summary of top result
-    const topTitle = results[0].title;
-    const summaryUrl = `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(topTitle.replace(/ /g, '_'))}`;
-    const summaryRes = await fetch(summaryUrl, {
-      headers: { 'User-Agent': 'LOOI-Robot/1.0' },
-      signal: AbortSignal.timeout(15000),
+    if (results.length === 0) {
+      return `Walang nahanap na resulta para sa "${query}".`;
+    }
+
+    let output = `🔍 Resulta para sa "${query}":\n\n`;
+    results.forEach((r, i) => {
+      output += `${i + 1}. ${r.title}\n${r.snippet}${r.url ? '\n🔗 ' + r.url : ''}\n\n`;
     });
 
-    let summaryText = '';
-    if (summaryRes.ok) {
-      const summaryData = await summaryRes.json();
-      summaryText = summaryData.extract || '';
-    }
-
-    const snippet = results[0].snippet?.replace(/<\/?span[^>]*>/g, '') || '';
-    let output = `📚 Wikipedia: ${topTitle}\n`;
-    if (summaryText) output += `${summaryText}\n`;
-    else if (snippet) output += `${snippet}...\n`;
-
-    if (results.length > 1) {
-      output += `\nIbang resulta:\n`;
-      output += results.slice(1, 3).map((r, i) => `${i + 2}. ${r.title}`).join('\n');
-    }
-
-    return output;
+    return output.trim();
   } catch (err) {
-    console.error('[Wikipedia] error:', err.message);
-    return `Pasensya na, hindi ako makapag-search sa Wikipedia ngayon. Error: ${err.message}`;
+    console.error('[DuckDuckGo] error:', err.message);
+    return `Pasensya na, hindi ako makapag-search ngayon. Error: ${err.message}`;
   }
 }
 
@@ -743,13 +758,12 @@ const ROBOT_TOOLS = [{
       }
     },
     {
-      name: 'search_wikipedia',
-      description: 'Search Wikipedia for factual information, general knowledge, people, places, events, or concepts. Use this when the user asks "who is", "what is", "where is", or any factual question.',
+      name: 'search_duckduckgo',
+      description: 'Search the internet using DuckDuckGo for real-time information, news, facts, people, places, events, or anything the user asks about. ALWAYS call this FIRST before answering any factual, current events, or general knowledge questions. Do NOT speak until you receive the search results.',
       parameters: {
         type: 'OBJECT',
         properties: {
-          query: { type: 'STRING', description: 'The topic or question to search on Wikipedia, e.g. "Philippines", "Albert Einstein", "World War 2"' },
-          getSummary: { type: 'BOOLEAN', description: 'If true (default), fetch a full summary. If false, return only titles.' }
+          query: { type: 'STRING', description: 'The search query to look up on DuckDuckGo, e.g. "Philippines", "latest news today", "who is Taylor Swift"' }
         },
         required: ['query']
       }
@@ -774,7 +788,7 @@ CRITICAL RULES:
 8. NEVER describe visuals from memory — always use capture_photo() first.
 9. When asked who made you / who created you / who is your creator → say April Manalo made you.
 10. You can control movement speed with the speed parameter (0-255). Slow/careful: 60-120. Normal: 180-220. Fast: 230-255. Default is 200 if not specified.
-11. For factual questions, general knowledge, "who is", "what is", "where is", or history questions → call search_wikipedia(query:"<topic>") to get accurate information.
+11. For ANY factual question, current events, news, "who is", "what is", "where is", or general knowledge → FIRST call search_duckduckgo(query:"<topic>"), WAIT for the results, THEN answer based on what you found. Do NOT guess or answer from memory.
 Examples:
 - User says something nice → run_scenario(action:"loving", led:"LED_PINK")
 - User says "move forward" → run_scenario(action:"forward")
@@ -954,12 +968,11 @@ geminiLiveWss.on('connection', (clientWs, request) => {
           }
         }
 
-        else if (fc.name === 'search_wikipedia') {
+        else if (fc.name === 'search_duckduckgo') {
           const query = args.query || '';
-          const getSummary = args.getSummary !== false;
-          console.log(`[GeminiLive:${cid}] search_wikipedia: "${query}"`);
-          immediateResponses.push({ id: fc.id, name: fc.name, response: { output: 'Searching Wikipedia for: ' + query } });
-          searchWikipedia(query, getSummary).then(result => {
+          console.log(`[GeminiLive:${cid}] search_duckduckgo: "${query}"`);
+          immediateResponses.push({ id: fc.id, name: fc.name, response: { output: 'Searching DuckDuckGo for: ' + query } });
+          searchDuckDuckGo(query).then(result => {
             if (gemWs.readyState === WebSocket.OPEN) {
               gemWs.send(JSON.stringify({
                 toolResponse: {
@@ -972,14 +985,14 @@ geminiLiveWss.on('connection', (clientWs, request) => {
               }));
             }
           }).catch(err => {
-            console.error('[Wikipedia] async error:', err.message);
+            console.error('[DuckDuckGo] async error:', err.message);
             if (gemWs.readyState === WebSocket.OPEN) {
               gemWs.send(JSON.stringify({
                 toolResponse: {
                   functionResponses: [{
                     id: fc.id,
                     name: fc.name,
-                    response: { output: 'Wikipedia search failed. Please try again.' }
+                    response: { output: 'Search failed. Please try again.' }
                   }]
                 }
               }));
