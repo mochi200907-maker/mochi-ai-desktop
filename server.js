@@ -277,7 +277,7 @@ async function fetchMusicResult(query) {
 }
 
 // ── Groq Compound Web Search ───────────────────────────────────────
-// Uses Groq's compound model with built-in web_search, code_interpreter, and visit_website tools.
+// Uses Groq\'s compound model with built-in web_search, code_interpreter, and visit_website tools.
 // This is FAR more reliable than scraping search engines ourselves.
 
 async function searchWithGroq(query) {
@@ -770,7 +770,7 @@ const ROBOT_TOOLS = [{
     },
     {
       name: 'search_web',
-      description: 'Search the internet using Groq's built-in web search tool. This can search the live web, visit websites, and run code to analyze data. ALWAYS call this FIRST before answering any factual question, current events, news, "who is", "what is", or general knowledge questions. WAIT for the complete answer to come back before speaking.',
+      description: 'Search the internet using Groq\'s built-in web search tool. This can search the live web, visit websites, and run code to analyze data. ALWAYS call this FIRST before answering any factual question, current events, news, "who is", "what is", or general knowledge questions. WAIT for the complete answer to come back before speaking.',
       parameters: {
         type: 'OBJECT',
         properties: {
@@ -800,7 +800,7 @@ CRITICAL RULES:
 9. When asked who made you / who created you / who is your creator → say April Manalo made you.
 10. You can control movement speed with the speed parameter (0-255). Slow/careful: 60-120. Normal: 180-220. Fast: 230-255. Default is 200 if not specified.
 11. For ANY factual question, current events, news, "who is", "what is", "where is", or general knowledge → FIRST call search_web(query:"<topic>"), WAIT for the results to come back, THEN answer based ONLY on what the search returned.
-12. CRITICAL: The search_web tool uses Groq's built-in web search (web_search, code_interpreter, visit_website). It returns a complete researched answer with sources. Do NOT add made-up information. If the search says it found nothing, tell the user honestly.
+12. CRITICAL: The search_web tool uses Groq\'s built-in web search (web_search, code_interpreter, visit_website). It returns a complete researched answer with sources. Do NOT add made-up information. If the search says it found nothing, tell the user honestly.
 Examples:
 - User says something nice → run_scenario(action:"loving", led:"LED_PINK")
 - User says "move forward" → run_scenario(action:"forward")
