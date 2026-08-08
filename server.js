@@ -276,69 +276,346 @@ async function fetchMusicResult(query) {
   return data;
 }
 
-// ── DuckDuckGo Search ───────────────────────────────────────
-async function searchDuckDuckGo(query) {
+// ── Multi-Source Web Search (DuckDuckGo + Wikipedia fallback) ───────────────────────────────────────
+
+// Helper: strip HTML tags
+function _stripHtml(html) {
+  return html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+// Helper: fetch with timeout
+async function _fetchWithTimeout(url, options = {}, timeoutMs = 10000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
-    const res = await fetch(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9',
-      },
-      signal: AbortSignal.timeout(15000),
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const html = await res.text();
-
-    // Parse results from DuckDuckGo HTML
-    const results = [];
-    // Match .result blocks
-    const resultBlocks = html.match(/<div class="result[^"]*"[^>]*>[\s\S]*?<\/div>\s*<\/div>/g) || [];
-
-    for (const block of resultBlocks.slice(0, 5)) {
-      // Title + link
-      const titleMatch = block.match(/<a[^>]*class="result__a"[^>]*>([\s\S]*?)<\/a>/i);
-      const title = titleMatch ? titleMatch[1].replace(/<[^>]+>/g, '').trim() : '';
-
-      // Snippet
-      const snippetMatch = block.match(/<a[^>]*class="result__snippet"[^>]*>([\s\S]*?)<\/a>/i);
-      const snippet = snippetMatch ? snippetMatch[1].replace(/<[^>]+>/g, '').trim() : '';
-
-      // URL
-      const urlMatch = block.match(/<a[^>]*class="result__url"[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/i);
-      const resultUrl = urlMatch ? urlMatch[2].replace(/<[^>]+>/g, '').trim() : '';
-
-      if (title && snippet) {
-        results.push({ title, snippet, url: resultUrl });
-      }
-    }
-
-    // Fallback: try broader regex if no results
-    if (results.length === 0) {
-      const links = html.matchAll(/<a[^>]*class="result__a"[^>]*>([\s\S]*?)<\/a>/gi);
-      const snippets = html.matchAll(/<a[^>]*class="result__snippet"[^>]*>([\s\S]*?)<\/a>/gi);
-      const titles = [...links].map(m => m[1].replace(/<[^>]+>/g, '').trim()).filter(Boolean);
-      const snips = [...snippets].map(m => m[1].replace(/<[^>]+>/g, '').trim()).filter(Boolean);
-      for (let i = 0; i < Math.min(titles.length, snips.length, 5); i++) {
-        results.push({ title: titles[i], snippet: snips[i], url: '' });
-      }
-    }
-
-    if (results.length === 0) {
-      return `Walang nahanap na resulta para sa "${query}".`;
-    }
-
-    let output = `🔍 Resulta para sa "${query}":\n\n`;
-    results.forEach((r, i) => {
-      output += `${i + 1}. ${r.title}\n${r.snippet}${r.url ? '\n🔗 ' + r.url : ''}\n\n`;
-    });
-
-    return output.trim();
+    const res = await fetch(url, { ...options, signal: controller.signal });
+    clearTimeout(timer);
+    return res;
   } catch (err) {
-    console.error('[DuckDuckGo] error:', err.message);
-    return `Pasensya na, hindi ako makapag-search ngayon. Error: ${err.message}`;
+    clearTimeout(timer);
+    throw err;
   }
+}
+
+// ── 1. DuckDuckGo Instant Answer API (official, fast, JSON, no key) ──
+async function _searchDDGInstantAnswer(query) {
+  const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1&t=looi-robot`;
+  const res = await _fetchWithTimeout(url, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'Accept': 'application/json',
+    },
+  }, 8000);
+  if (!res.ok) throw new Error(`IA HTTP ${res.status}`);
+  const data = await res.json();
+
+  const results = [];
+
+  // Main abstract
+  if (data.AbstractText && data.AbstractText.trim()) {
+    results.push({
+      title: data.Heading || query,
+      snippet: data.AbstractText.trim(),
+      url: data.AbstractURL || '',
+      source: data.AbstractSource || 'DuckDuckGo',
+    });
+  }
+
+  // Definition
+  if (data.Definition && data.Definition.trim()) {
+    results.push({
+      title: `Definition: ${data.Heading || query}`,
+      snippet: data.Definition.trim(),
+      url: data.DefinitionURL || '',
+      source: data.DefinitionSource || 'DuckDuckGo',
+    });
+  }
+
+  // Answer
+  if (data.Answer && data.Answer.trim() && data.Answer !== data.AbstractText) {
+    results.push({
+      title: `Answer: ${data.Heading || query}`,
+      snippet: data.Answer.trim(),
+      url: data.AbstractURL || '',
+      source: 'DuckDuckGo',
+    });
+  }
+
+  // Related topics
+  if (data.RelatedTopics && Array.isArray(data.RelatedTopics)) {
+    for (const topic of data.RelatedTopics.slice(0, 3)) {
+      if (topic.Text && topic.Text.trim()) {
+        results.push({
+          title: topic.Text.split(' - ')[0] || topic.Text,
+          snippet: topic.Text,
+          url: topic.FirstURL || '',
+          source: 'DuckDuckGo',
+        });
+      }
+      // Nested topics
+      if (topic.Topics && Array.isArray(topic.Topics)) {
+        for (const sub of topic.Topics.slice(0, 2)) {
+          if (sub.Text && sub.Text.trim()) {
+            results.push({
+              title: sub.Text.split(' - ')[0] || sub.Text,
+              snippet: sub.Text,
+              url: sub.FirstURL || '',
+              source: 'DuckDuckGo',
+            });
+          }
+        }
+      }
+    }
+  }
+
+  return results;
+}
+
+// ── 2. DuckDuckGo Lite HTML (simpler, faster than html.duckduckgo.com) ──
+async function _searchDDGLite(query) {
+  const url = `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(query)}&kl=us-en`;
+  const res = await _fetchWithTimeout(url, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'Accept': 'text/html,application/xhtml+xml',
+      'Accept-Language': 'en-US,en;q=0.9',
+    },
+  }, 10000);
+  if (!res.ok) throw new Error(`Lite HTTP ${res.status}`);
+  const html = await res.text();
+
+  const results = [];
+  const seen = new Set();
+
+  // DDG Lite uses table rows: .result-link for title, .result-snippet for description
+  // Pattern 1: result-link + result-snippet pairs
+  const linkMatches = [...html.matchAll(/<a[^>]*class="result-link"[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi)];
+  const snippetMatches = [...html.matchAll(/<td[^>]*class="result-snippet"[^>]*>([\s\S]*?)<\/td>/gi)];
+
+  for (let i = 0; i < Math.min(linkMatches.length, snippetMatches.length, 5); i++) {
+    const title = _stripHtml(linkMatches[i][2]);
+    const snippet = _stripHtml(snippetMatches[i][1]);
+    const resultUrl = linkMatches[i][1];
+    if (title && snippet && !seen.has(title)) {
+      seen.add(title);
+      results.push({ title, snippet, url: resultUrl, source: 'DuckDuckGo Lite' });
+    }
+  }
+
+  // Pattern 2: broader fallback - any link in result rows
+  if (results.length === 0) {
+    const rows = html.matchAll(/<tr[^>]*>[\s\S]*?<\/tr>/gi);
+    for (const rowMatch of rows) {
+      const row = rowMatch[0];
+      const link = row.match(/<a[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/i);
+      const snippet = row.match(/<td[^>]*>([\s\S]*?)<\/td>/gi);
+      if (link && snippet) {
+        const title = _stripHtml(link[2]);
+        const snip = _stripHtml(snippet[snippet.length - 1] || '');
+        if (title && snip && !seen.has(title)) {
+          seen.add(title);
+          results.push({ title, snippet: snip, url: link[1], source: 'DuckDuckGo Lite' });
+        }
+      }
+    }
+  }
+
+  return results;
+}
+
+// ── 3. DuckDuckGo HTML (full results, slower) ──
+async function _searchDDGHtml(query) {
+  const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}&kl=us-en`;
+  const res = await _fetchWithTimeout(url, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'Accept': 'text/html,application/xhtml+xml',
+      'Accept-Language': 'en-US,en;q=0.9',
+    },
+  }, 12000);
+  if (!res.ok) throw new Error(`HTML HTTP ${res.status}`);
+  const html = await res.text();
+
+  const results = [];
+  const seen = new Set();
+
+  // Parse .result blocks (proven pattern from ddgs library)
+  const resultBlocks = [...html.matchAll(/<div[^>]*class="result[^"]*"[^>]*>([\s\S]*?)<\/div>\s*<\/div>/gi)];
+
+  for (const blockMatch of resultBlocks.slice(0, 5)) {
+    const block = blockMatch[1] || blockMatch[0];
+
+    // Title link (.result__a)
+    const titleMatch = block.match(/<a[^>]*class="result__a"[^>]*>([\s\S]*?)<\/a>/i);
+    const title = titleMatch ? _stripHtml(titleMatch[1]) : '';
+
+    // Snippet (.result__snippet)
+    const snippetMatch = block.match(/<a[^>]*class="result__snippet"[^>]*>([\s\S]*?)<\/a>/i);
+    const snippet = snippetMatch ? _stripHtml(snippetMatch[1]) : '';
+
+    // URL - extract from redirect href
+    const hrefMatch = block.match(/<a[^>]*class="result__a"[^>]*href="([^"]*)"/i);
+    let resultUrl = '';
+    if (hrefMatch) {
+      const href = hrefMatch[1];
+      // Unwrap DDG redirect: //duckduckgo.com/l/?uddg=<encoded-url>
+      const uddg = href.match(/[?&]uddg=([^&]*)/);
+      if (uddg) {
+        try { resultUrl = decodeURIComponent(uddg[1]); } catch { resultUrl = href; }
+      } else {
+        resultUrl = href;
+      }
+    }
+
+    if (title && snippet && !seen.has(title)) {
+      seen.add(title);
+      results.push({ title, snippet, url: resultUrl, source: 'DuckDuckGo' });
+    }
+  }
+
+  // Fallback: grab any result__a and result__snippet globally
+  if (results.length === 0) {
+    const links = [...html.matchAll(/<a[^>]*class="result__a"[^>]*>([\s\S]*?)<\/a>/gi)];
+    const snippets = [...html.matchAll(/<a[^>]*class="result__snippet"[^>]*>([\s\S]*?)<\/a>/gi)];
+    for (let i = 0; i < Math.min(links.length, snippets.length, 5); i++) {
+      const title = _stripHtml(links[i][1]);
+      const snippet = _stripHtml(snippets[i][1]);
+      if (title && snippet && !seen.has(title)) {
+        seen.add(title);
+        results.push({ title, snippet, url: '', source: 'DuckDuckGo' });
+      }
+    }
+  }
+
+  return results;
+}
+
+// ── 4. Wikipedia fallback ──
+async function _searchWikipedia(query) {
+  const searchUrl = `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&format=json&srlimit=3&origin=*`;
+  const res = await _fetchWithTimeout(searchUrl, {
+    headers: { 'User-Agent': 'LOOI-Robot/1.0' },
+  }, 8000);
+  if (!res.ok) throw new Error(`Wiki HTTP ${res.status}`);
+  const data = await res.json();
+  const results = [];
+  const items = data?.query?.search || [];
+  if (items.length === 0) return results;
+
+  // Get summary of top result
+  const topTitle = items[0].title;
+  const summaryUrl = `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(topTitle.replace(/ /g, '_'))}`;
+  const sumRes = await _fetchWithTimeout(summaryUrl, {
+    headers: { 'User-Agent': 'LOOI-Robot/1.0' },
+  }, 8000);
+  let summaryText = '';
+  if (sumRes.ok) {
+    const sumData = await sumRes.json();
+    summaryText = sumData.extract || '';
+  }
+
+  if (summaryText) {
+    results.push({ title: topTitle, snippet: summaryText, url: `https://en.wikipedia.org/wiki/${topTitle.replace(/ /g, '_')}`, source: 'Wikipedia' });
+  }
+
+  for (let i = 1; i < Math.min(items.length, 3); i++) {
+    const snippet = _stripHtml(items[i].snippet || '');
+    if (snippet) {
+      results.push({
+        title: items[i].title,
+        snippet: snippet + '...',
+        url: `https://en.wikipedia.org/wiki/${items[i].title.replace(/ /g, '_')}`,
+        source: 'Wikipedia',
+      });
+    }
+  }
+
+  return results;
+}
+
+// ── Main search function: tries multiple sources in order ──
+async function searchWeb(query) {
+  const sources = [];
+  let lastError = '';
+
+  // 1. Try DDG Instant Answer (fastest, official API)
+  try {
+    const iaResults = await _searchDDGInstantAnswer(query);
+    if (iaResults.length > 0) {
+      console.log(`[Search] DDG Instant Answer: ${iaResults.length} results`);
+      sources.push(...iaResults);
+    }
+  } catch (err) {
+    console.warn('[Search] DDG Instant Answer failed:', err.message);
+    lastError = err.message;
+  }
+
+  // 2. Try DDG Lite (if IA gave few/no results)
+  if (sources.length < 2) {
+    try {
+      const liteResults = await _searchDDGLite(query);
+      if (liteResults.length > 0) {
+        console.log(`[Search] DDG Lite: ${liteResults.length} results`);
+        // Merge, avoiding duplicates
+        const seen = new Set(sources.map(r => r.title));
+        for (const r of liteResults) {
+          if (!seen.has(r.title)) {
+            seen.add(r.title);
+            sources.push(r);
+          }
+        }
+      }
+    } catch (err) {
+      console.warn('[Search] DDG Lite failed:', err.message);
+      lastError = err.message;
+    }
+  }
+
+  // 3. Try DDG HTML (if still few results)
+  if (sources.length < 2) {
+    try {
+      const htmlResults = await _searchDDGHtml(query);
+      if (htmlResults.length > 0) {
+        console.log(`[Search] DDG HTML: ${htmlResults.length} results`);
+        const seen = new Set(sources.map(r => r.title));
+        for (const r of htmlResults) {
+          if (!seen.has(r.title)) {
+            seen.add(r.title);
+            sources.push(r);
+          }
+        }
+      }
+    } catch (err) {
+      console.warn('[Search] DDG HTML failed:', err.message);
+      lastError = err.message;
+    }
+  }
+
+  // 4. Wikipedia fallback (for factual queries)
+  if (sources.length === 0) {
+    try {
+      const wikiResults = await _searchWikipedia(query);
+      if (wikiResults.length > 0) {
+        console.log(`[Search] Wikipedia: ${wikiResults.length} results`);
+        sources.push(...wikiResults);
+      }
+    } catch (err) {
+      console.warn('[Search] Wikipedia failed:', err.message);
+      lastError = err.message;
+    }
+  }
+
+  // Format output
+  if (sources.length === 0) {
+    return `Pasensya na, walang nahanap na resulta para sa "${query}". ${lastError ? '(Error: ' + lastError + ')' : ''}`;
+  }
+
+  let output = `🔍 Resulta para sa "${query}":\n\n`;
+  sources.slice(0, 6).forEach((r, i) => {
+    output += `${i + 1}. ${r.title}${r.source ? ' [' + r.source + ']' : ''}\n${r.snippet}${r.url ? '\n🔗 ' + r.url : ''}\n\n`;
+  });
+
+  return output.trim();
 }
 
 // ── HTTP Routes ────────────────────────────────────────────────
@@ -758,12 +1035,12 @@ const ROBOT_TOOLS = [{
       }
     },
     {
-      name: 'search_duckduckgo',
-      description: 'Search the internet using DuckDuckGo for real-time information, news, facts, people, places, events, or anything the user asks about. ALWAYS call this FIRST before answering any factual, current events, or general knowledge questions. Do NOT speak until you receive the search results.',
+      name: 'search_web',
+      description: 'Search the internet for real-time information, news, facts, people, places, events, or anything the user asks about. This tool tries DuckDuckGo Instant Answers, DuckDuckGo web search, and Wikipedia automatically. ALWAYS call this FIRST before answering any factual, current events, or general knowledge questions. WAIT for the results to come back before speaking. Do NOT guess or answer from memory.',
       parameters: {
         type: 'OBJECT',
         properties: {
-          query: { type: 'STRING', description: 'The search query to look up on DuckDuckGo, e.g. "Philippines", "latest news today", "who is Taylor Swift"' }
+          query: { type: 'STRING', description: 'The search query, e.g. "Philippines", "latest news today", "who is Taylor Swift"' }
         },
         required: ['query']
       }
@@ -788,7 +1065,7 @@ CRITICAL RULES:
 8. NEVER describe visuals from memory — always use capture_photo() first.
 9. When asked who made you / who created you / who is your creator → say April Manalo made you.
 10. You can control movement speed with the speed parameter (0-255). Slow/careful: 60-120. Normal: 180-220. Fast: 230-255. Default is 200 if not specified.
-11. For ANY factual question, current events, news, "who is", "what is", "where is", or general knowledge → FIRST call search_duckduckgo(query:"<topic>"), WAIT for the results, THEN answer based on what you found. Do NOT guess or answer from memory.
+11. For ANY factual question, current events, news, "who is", "what is", "where is", or general knowledge → FIRST call search_web(query:"<topic>"), WAIT for the results to come back, THEN answer based ONLY on what you found. Do NOT guess or answer from memory.
 Examples:
 - User says something nice → run_scenario(action:"loving", led:"LED_PINK")
 - User says "move forward" → run_scenario(action:"forward")
@@ -968,11 +1245,11 @@ geminiLiveWss.on('connection', (clientWs, request) => {
           }
         }
 
-        else if (fc.name === 'search_duckduckgo') {
+        else if (fc.name === 'search_web') {
           const query = args.query || '';
-          console.log(`[GeminiLive:${cid}] search_duckduckgo: "${query}"`);
-          immediateResponses.push({ id: fc.id, name: fc.name, response: { output: 'Searching DuckDuckGo for: ' + query } });
-          searchDuckDuckGo(query).then(result => {
+          console.log(`[GeminiLive:${cid}] search_web: "${query}"`);
+          immediateResponses.push({ id: fc.id, name: fc.name, response: { output: 'Searching the web for: ' + query } });
+          searchWeb(query).then(result => {
             if (gemWs.readyState === WebSocket.OPEN) {
               gemWs.send(JSON.stringify({
                 toolResponse: {
@@ -985,14 +1262,14 @@ geminiLiveWss.on('connection', (clientWs, request) => {
               }));
             }
           }).catch(err => {
-            console.error('[DuckDuckGo] async error:', err.message);
+            console.error('[Search] async error:', err.message);
             if (gemWs.readyState === WebSocket.OPEN) {
               gemWs.send(JSON.stringify({
                 toolResponse: {
                   functionResponses: [{
                     id: fc.id,
                     name: fc.name,
-                    response: { output: 'Search failed. Please try again.' }
+                    response: { output: 'Web search failed. Please try again.' }
                   }]
                 }
               }));
