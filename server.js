@@ -276,12 +276,7 @@ async function fetchMusicResult(query) {
   return data;
 }
 
-// ── Multi-Source Web Search (DuckDuckGo + Wikipedia fallback) ───────────────────────────────────────
-
-// Helper: strip HTML tags
-function _stripHtml(html) {
-  return html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-}
+// ── Multi-Source Web Search (Parallel Free + DDG IA + Wikipedia) ───────────────────────────────────────
 
 // Helper: fetch with timeout
 async function _fetchWithTimeout(url, options = {}, timeoutMs = 10000) {
@@ -297,21 +292,48 @@ async function _fetchWithTimeout(url, options = {}, timeoutMs = 10000) {
   }
 }
 
-// ── 1. DuckDuckGo Instant Answer API (official, fast, JSON, no key) ──
+// ── 1. Parallel Search Free (primary — real web search, no API key) ──
+async function _searchParallel(query) {
+  const url = `https://search.parallel.ai/mcp?q=${encodeURIComponent(query)}&limit=5`;
+  const res = await _fetchWithTimeout(url, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      'Accept': 'application/json',
+    },
+  }, 8000);
+  if (!res.ok) throw new Error(`Parallel HTTP ${res.status}`);
+  const data = await res.json();
+
+  const results = [];
+  const items = data?.results || data?.excerpts || data?.data || [];
+
+  for (const item of items.slice(0, 5)) {
+    const title = item.title || item.heading || '';
+    const snippet = item.excerpt || item.snippet || item.content || item.text || '';
+    const resultUrl = item.url || item.link || item.source || '';
+    if (title && snippet) {
+      results.push({ title, snippet, url: resultUrl, source: 'Parallel Search' });
+    }
+  }
+
+  console.log(`[Search] Parallel: ${results.length} results`);
+  return results;
+}
+
+// ── 2. DuckDuckGo Instant Answer API (fallback for factual queries) ──
 async function _searchDDGInstantAnswer(query) {
   const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1&t=looi-robot`;
   const res = await _fetchWithTimeout(url, {
     headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
       'Accept': 'application/json',
     },
-  }, 8000);
+  }, 6000);
   if (!res.ok) throw new Error(`IA HTTP ${res.status}`);
   const data = await res.json();
 
   const results = [];
 
-  // Main abstract
   if (data.AbstractText && data.AbstractText.trim()) {
     results.push({
       title: data.Heading || query,
@@ -321,7 +343,6 @@ async function _searchDDGInstantAnswer(query) {
     });
   }
 
-  // Definition
   if (data.Definition && data.Definition.trim()) {
     results.push({
       title: `Definition: ${data.Heading || query}`,
@@ -331,7 +352,6 @@ async function _searchDDGInstantAnswer(query) {
     });
   }
 
-  // Answer
   if (data.Answer && data.Answer.trim() && data.Answer !== data.AbstractText) {
     results.push({
       title: `Answer: ${data.Heading || query}`,
@@ -341,7 +361,6 @@ async function _searchDDGInstantAnswer(query) {
     });
   }
 
-  // Related topics
   if (data.RelatedTopics && Array.isArray(data.RelatedTopics)) {
     for (const topic of data.RelatedTopics.slice(0, 3)) {
       if (topic.Text && topic.Text.trim()) {
@@ -352,7 +371,6 @@ async function _searchDDGInstantAnswer(query) {
           source: 'DuckDuckGo',
         });
       }
-      // Nested topics
       if (topic.Topics && Array.isArray(topic.Topics)) {
         for (const sub of topic.Topics.slice(0, 2)) {
           if (sub.Text && sub.Text.trim()) {
@@ -368,129 +386,11 @@ async function _searchDDGInstantAnswer(query) {
     }
   }
 
+  console.log(`[Search] DDG IA: ${results.length} results`);
   return results;
 }
 
-// ── 2. DuckDuckGo Lite HTML (simpler, faster than html.duckduckgo.com) ──
-async function _searchDDGLite(query) {
-  const url = `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(query)}&kl=us-en`;
-  const res = await _fetchWithTimeout(url, {
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      'Accept': 'text/html,application/xhtml+xml',
-      'Accept-Language': 'en-US,en;q=0.9',
-    },
-  }, 10000);
-  if (!res.ok) throw new Error(`Lite HTTP ${res.status}`);
-  const html = await res.text();
-
-  const results = [];
-  const seen = new Set();
-
-  // DDG Lite uses table rows: .result-link for title, .result-snippet for description
-  // Pattern 1: result-link + result-snippet pairs
-  const linkMatches = [...html.matchAll(/<a[^>]*class="result-link"[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi)];
-  const snippetMatches = [...html.matchAll(/<td[^>]*class="result-snippet"[^>]*>([\s\S]*?)<\/td>/gi)];
-
-  for (let i = 0; i < Math.min(linkMatches.length, snippetMatches.length, 5); i++) {
-    const title = _stripHtml(linkMatches[i][2]);
-    const snippet = _stripHtml(snippetMatches[i][1]);
-    const resultUrl = linkMatches[i][1];
-    if (title && snippet && !seen.has(title)) {
-      seen.add(title);
-      results.push({ title, snippet, url: resultUrl, source: 'DuckDuckGo Lite' });
-    }
-  }
-
-  // Pattern 2: broader fallback - any link in result rows
-  if (results.length === 0) {
-    const rows = html.matchAll(/<tr[^>]*>[\s\S]*?<\/tr>/gi);
-    for (const rowMatch of rows) {
-      const row = rowMatch[0];
-      const link = row.match(/<a[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/i);
-      const snippet = row.match(/<td[^>]*>([\s\S]*?)<\/td>/gi);
-      if (link && snippet) {
-        const title = _stripHtml(link[2]);
-        const snip = _stripHtml(snippet[snippet.length - 1] || '');
-        if (title && snip && !seen.has(title)) {
-          seen.add(title);
-          results.push({ title, snippet: snip, url: link[1], source: 'DuckDuckGo Lite' });
-        }
-      }
-    }
-  }
-
-  return results;
-}
-
-// ── 3. DuckDuckGo HTML (full results, slower) ──
-async function _searchDDGHtml(query) {
-  const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}&kl=us-en`;
-  const res = await _fetchWithTimeout(url, {
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      'Accept': 'text/html,application/xhtml+xml',
-      'Accept-Language': 'en-US,en;q=0.9',
-    },
-  }, 12000);
-  if (!res.ok) throw new Error(`HTML HTTP ${res.status}`);
-  const html = await res.text();
-
-  const results = [];
-  const seen = new Set();
-
-  // Parse .result blocks (proven pattern from ddgs library)
-  const resultBlocks = [...html.matchAll(/<div[^>]*class="result[^"]*"[^>]*>([\s\S]*?)<\/div>\s*<\/div>/gi)];
-
-  for (const blockMatch of resultBlocks.slice(0, 5)) {
-    const block = blockMatch[1] || blockMatch[0];
-
-    // Title link (.result__a)
-    const titleMatch = block.match(/<a[^>]*class="result__a"[^>]*>([\s\S]*?)<\/a>/i);
-    const title = titleMatch ? _stripHtml(titleMatch[1]) : '';
-
-    // Snippet (.result__snippet)
-    const snippetMatch = block.match(/<a[^>]*class="result__snippet"[^>]*>([\s\S]*?)<\/a>/i);
-    const snippet = snippetMatch ? _stripHtml(snippetMatch[1]) : '';
-
-    // URL - extract from redirect href
-    const hrefMatch = block.match(/<a[^>]*class="result__a"[^>]*href="([^"]*)"/i);
-    let resultUrl = '';
-    if (hrefMatch) {
-      const href = hrefMatch[1];
-      // Unwrap DDG redirect: //duckduckgo.com/l/?uddg=<encoded-url>
-      const uddg = href.match(/[?&]uddg=([^&]*)/);
-      if (uddg) {
-        try { resultUrl = decodeURIComponent(uddg[1]); } catch { resultUrl = href; }
-      } else {
-        resultUrl = href;
-      }
-    }
-
-    if (title && snippet && !seen.has(title)) {
-      seen.add(title);
-      results.push({ title, snippet, url: resultUrl, source: 'DuckDuckGo' });
-    }
-  }
-
-  // Fallback: grab any result__a and result__snippet globally
-  if (results.length === 0) {
-    const links = [...html.matchAll(/<a[^>]*class="result__a"[^>]*>([\s\S]*?)<\/a>/gi)];
-    const snippets = [...html.matchAll(/<a[^>]*class="result__snippet"[^>]*>([\s\S]*?)<\/a>/gi)];
-    for (let i = 0; i < Math.min(links.length, snippets.length, 5); i++) {
-      const title = _stripHtml(links[i][1]);
-      const snippet = _stripHtml(snippets[i][1]);
-      if (title && snippet && !seen.has(title)) {
-        seen.add(title);
-        results.push({ title, snippet, url: '', source: 'DuckDuckGo' });
-      }
-    }
-  }
-
-  return results;
-}
-
-// ── 4. Wikipedia fallback ──
+// ── 3. Wikipedia fallback ──
 async function _searchWikipedia(query) {
   const searchUrl = `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&format=json&srlimit=3&origin=*`;
   const res = await _fetchWithTimeout(searchUrl, {
@@ -502,7 +402,6 @@ async function _searchWikipedia(query) {
   const items = data?.query?.search || [];
   if (items.length === 0) return results;
 
-  // Get summary of top result
   const topTitle = items[0].title;
   const summaryUrl = `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(topTitle.replace(/ /g, '_'))}`;
   const sumRes = await _fetchWithTimeout(summaryUrl, {
@@ -519,7 +418,7 @@ async function _searchWikipedia(query) {
   }
 
   for (let i = 1; i < Math.min(items.length, 3); i++) {
-    const snippet = _stripHtml(items[i].snippet || '');
+    const snippet = (items[i].snippet || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
     if (snippet) {
       results.push({
         title: items[i].title,
@@ -530,46 +429,70 @@ async function _searchWikipedia(query) {
     }
   }
 
+  console.log(`[Search] Wikipedia: ${results.length} results`);
   return results;
 }
 
-// ── Main search function: tries multiple sources in parallel ──
-async function searchWeb(query, maxWaitMs = 12000) {
+// ── Main search function: tries sources in order with fallback ──
+async function searchWeb(query) {
   const sources = [];
   const seen = new Set();
-  let lastError = '';
+  const errors = [];
 
-  // Run all searches in parallel with individual timeouts
-  const promises = [
-    _searchDDGInstantAnswer(query).catch(e => { console.warn('[Search] IA failed:', e.message); lastError = e.message; return []; }),
-    _searchDDGLite(query).catch(e => { console.warn('[Search] Lite failed:', e.message); lastError = e.message; return []; }),
-    _searchDDGHtml(query).catch(e => { console.warn('[Search] HTML failed:', e.message); lastError = e.message; return []; }),
-    _searchWikipedia(query).catch(e => { console.warn('[Search] Wiki failed:', e.message); lastError = e.message; return []; }),
-  ];
+  // 1. Try Parallel Search Free first (real web search)
+  try {
+    const parallelResults = await _searchParallel(query);
+    for (const r of parallelResults) {
+      if (r.title && r.snippet && !seen.has(r.title)) {
+        seen.add(r.title);
+        sources.push(r);
+      }
+    }
+  } catch (err) {
+    console.warn('[Search] Parallel failed:', err.message);
+    errors.push('Parallel: ' + err.message);
+  }
 
-  // Race: return as soon as we have enough results OR timeout
-  const startTime = Date.now();
-  const results = await Promise.allSettled(promises);
-
-  for (const res of results) {
-    if (res.status === 'fulfilled' && Array.isArray(res.value)) {
-      for (const r of res.value) {
+  // 2. Try DDG Instant Answer (good for factual queries)
+  if (sources.length < 2) {
+    try {
+      const ddgResults = await _searchDDGInstantAnswer(query);
+      for (const r of ddgResults) {
         if (r.title && r.snippet && !seen.has(r.title)) {
           seen.add(r.title);
           sources.push(r);
         }
       }
+    } catch (err) {
+      console.warn('[Search] DDG IA failed:', err.message);
+      errors.push('DDG: ' + err.message);
     }
   }
 
-  console.log(`[Search] Total unique results: ${sources.length} in ${Date.now() - startTime}ms`);
+  // 3. Wikipedia fallback
+  if (sources.length === 0) {
+    try {
+      const wikiResults = await _searchWikipedia(query);
+      for (const r of wikiResults) {
+        if (r.title && r.snippet && !seen.has(r.title)) {
+          seen.add(r.title);
+          sources.push(r);
+        }
+      }
+    } catch (err) {
+      console.warn('[Search] Wikipedia failed:', err.message);
+      errors.push('Wiki: ' + err.message);
+    }
+  }
+
+  console.log(`[Search] FINAL: ${sources.length} unique results for "${query}"`);
 
   if (sources.length === 0) {
-    return `Pasensya na, walang nahanap na resulta para sa "${query}". ${lastError ? '(Error: ' + lastError + ')' : ''}`;
+    return `Pasensya na, hindi ako makapag-search sa web ngayon. Lahat ng sources ay nag-fail. ${errors.length > 0 ? 'Errors: ' + errors.join('; ') : ''}`;
   }
 
   let output = `🔍 Resulta para sa "${query}":\n\n`;
-  sources.slice(0, 6).forEach((r, i) => {
+  sources.slice(0, 5).forEach((r, i) => {
     output += `${i + 1}. ${r.title}${r.source ? ' [' + r.source + ']' : ''}\n${r.snippet}${r.url ? '\n🔗 ' + r.url : ''}\n\n`;
   });
 
@@ -1023,7 +946,8 @@ CRITICAL RULES:
 8. NEVER describe visuals from memory — always use capture_photo() first.
 9. When asked who made you / who created you / who is your creator → say April Manalo made you.
 10. You can control movement speed with the speed parameter (0-255). Slow/careful: 60-120. Normal: 180-220. Fast: 230-255. Default is 200 if not specified.
-11. For ANY factual question, current events, news, "who is", "what is", "where is", or general knowledge → FIRST call search_web(query:"<topic>"), WAIT for the results to come back, THEN answer based ONLY on what you found. Do NOT guess or answer from memory.
+11. For ANY factual question, current events, news, "who is", "what is", "where is", or general knowledge → FIRST call search_web(query:"<topic>"), WAIT for the results, THEN answer based ONLY on what the search returned.
+12. CRITICAL: If search returns NO results or says "hindi ako makapag-search", you MUST tell the user honestly: "Pasensya na, hindi ako makapag-search sa web ngayon." Do NOT make up information, do NOT invent sources, do NOT guess. Only speak facts that came from the search results.
 Examples:
 - User says something nice → run_scenario(action:"loving", led:"LED_PINK")
 - User says "move forward" → run_scenario(action:"forward")
