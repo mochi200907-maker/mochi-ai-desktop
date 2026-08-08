@@ -1604,7 +1604,7 @@
   }
   function enterVoiceMode(){
     console.log('[Audio] → voice mode');
-    if('audioSession' in navigator){try{navigator.audioSession.type='play-and-record';}catch(_){}}
+    if('audioSession' in navigator){try{navigator.audioSession.type='playback';}catch(_){}}
     if(audioCtx&&audioCtx.state==='suspended')audioCtx.resume().catch(()=>{});
     if(!micStream&&audioCtx&&geminiProc){
       const gen=_micGen;
@@ -1775,7 +1775,7 @@
   }
 
   async function initAudio(){
-    if('audioSession' in navigator){try{navigator.audioSession.type='play-and-record';}catch(_){}}
+    if('audioSession' in navigator){try{navigator.audioSession.type='playback';}catch(_){}}
     // High-quality mic — disable AGC so the compressor below has full control
     micStream=await navigator.mediaDevices.getUserMedia({audio:{
       echoCancellation:true,
@@ -1787,7 +1787,7 @@
     }});
     audioCtx=new(window.AudioContext||window.webkitAudioContext)({latencyHint:'interactive'});
     try{await audioCtx.resume();}catch(_){}
-    if('audioSession' in navigator){try{navigator.audioSession.type='play-and-record';}catch(_){}}
+    if('audioSession' in navigator){try{navigator.audioSession.type='playback';}catch(_){}}
     voiceGain=audioCtx.createGain(); voiceGain.gain.value=1.0;
     // Voice EQ: roll off sub-bass rumble, boost speech presence band, gentle treble air
     const highPass=audioCtx.createBiquadFilter(); highPass.type='highpass'; highPass.frequency.value=100; highPass.Q.value=0.5;
