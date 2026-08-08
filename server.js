@@ -276,227 +276,80 @@ async function fetchMusicResult(query) {
   return data;
 }
 
-// ── Multi-Source Web Search (Parallel Free + DDG IA + Wikipedia) ───────────────────────────────────────
+// ── Groq Compound Web Search ───────────────────────────────────────
+// Uses Groq's compound model with built-in web_search, code_interpreter, and visit_website tools.
+// This is FAR more reliable than scraping search engines ourselves.
 
-// Helper: fetch with timeout
-async function _fetchWithTimeout(url, options = {}, timeoutMs = 10000) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+async function searchWithGroq(query) {
+  const groqKey = process.env.GROQ_API_KEY;
+  if (!groqKey) {
+    return 'Error: GROQ_API_KEY is not set. Please configure it in environment variables.';
+  }
+
   try {
-    const res = await fetch(url, { ...options, signal: controller.signal });
-    clearTimeout(timer);
-    return res;
-  } catch (err) {
-    clearTimeout(timer);
-    throw err;
-  }
-}
+    const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${groqKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'groq/compound',
+        messages: [
+          {
+            role: 'system',
+            content: `You are a web search assistant. Your job is to search the internet for the user's query and provide accurate, factual, up-to-date information.
 
-// ── 1. Parallel Search Free (primary — real web search, no API key) ──
-async function _searchParallel(query) {
-  const url = `https://search.parallel.ai/mcp?q=${encodeURIComponent(query)}&limit=5`;
-  const res = await _fetchWithTimeout(url, {
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-      'Accept': 'application/json',
-    },
-  }, 8000);
-  if (!res.ok) throw new Error(`Parallel HTTP ${res.status}`);
-  const data = await res.json();
-
-  const results = [];
-  const items = data?.results || data?.excerpts || data?.data || [];
-
-  for (const item of items.slice(0, 5)) {
-    const title = item.title || item.heading || '';
-    const snippet = item.excerpt || item.snippet || item.content || item.text || '';
-    const resultUrl = item.url || item.link || item.source || '';
-    if (title && snippet) {
-      results.push({ title, snippet, url: resultUrl, source: 'Parallel Search' });
-    }
-  }
-
-  console.log(`[Search] Parallel: ${results.length} results`);
-  return results;
-}
-
-// ── 2. DuckDuckGo Instant Answer API (fallback for factual queries) ──
-async function _searchDDGInstantAnswer(query) {
-  const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1&t=looi-robot`;
-  const res = await _fetchWithTimeout(url, {
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-      'Accept': 'application/json',
-    },
-  }, 6000);
-  if (!res.ok) throw new Error(`IA HTTP ${res.status}`);
-  const data = await res.json();
-
-  const results = [];
-
-  if (data.AbstractText && data.AbstractText.trim()) {
-    results.push({
-      title: data.Heading || query,
-      snippet: data.AbstractText.trim(),
-      url: data.AbstractURL || '',
-      source: data.AbstractSource || 'DuckDuckGo',
-    });
-  }
-
-  if (data.Definition && data.Definition.trim()) {
-    results.push({
-      title: `Definition: ${data.Heading || query}`,
-      snippet: data.Definition.trim(),
-      url: data.DefinitionURL || '',
-      source: data.DefinitionSource || 'DuckDuckGo',
-    });
-  }
-
-  if (data.Answer && data.Answer.trim() && data.Answer !== data.AbstractText) {
-    results.push({
-      title: `Answer: ${data.Heading || query}`,
-      snippet: data.Answer.trim(),
-      url: data.AbstractURL || '',
-      source: 'DuckDuckGo',
-    });
-  }
-
-  if (data.RelatedTopics && Array.isArray(data.RelatedTopics)) {
-    for (const topic of data.RelatedTopics.slice(0, 3)) {
-      if (topic.Text && topic.Text.trim()) {
-        results.push({
-          title: topic.Text.split(' - ')[0] || topic.Text,
-          snippet: topic.Text,
-          url: topic.FirstURL || '',
-          source: 'DuckDuckGo',
-        });
-      }
-      if (topic.Topics && Array.isArray(topic.Topics)) {
-        for (const sub of topic.Topics.slice(0, 2)) {
-          if (sub.Text && sub.Text.trim()) {
-            results.push({
-              title: sub.Text.split(' - ')[0] || sub.Text,
-              snippet: sub.Text,
-              url: sub.FirstURL || '',
-              source: 'DuckDuckGo',
-            });
+Rules:
+1. Use web_search to find current information.
+2. Use visit_website to read full articles if needed.
+3. Use code_interpreter for any calculations or data analysis.
+4. Always cite your sources with URLs when possible.
+5. If you cannot find reliable information, say so honestly.
+6. Respond in the same language as the user's query (Tagalog/English mix is fine).`
+          },
+          {
+            role: 'user',
+            content: query
+          }
+        ],
+        temperature: 0.7,
+        max_completion_tokens: 2048,
+        top_p: 1,
+        compound_custom: {
+          tools: {
+            enabled_tools: ['web_search', 'code_interpreter', 'visit_website']
           }
         }
-      }
+      }),
+      signal: AbortSignal.timeout(35000),
+    });
+
+    if (!res.ok) {
+      const errText = await res.text().catch(() => 'Unknown error');
+      console.error(`[GroqSearch] HTTP ${res.status}: ${errText}`);
+      throw new Error(`Groq API error ${res.status}`);
     }
-  }
 
-  console.log(`[Search] DDG IA: ${results.length} results`);
-  return results;
-}
+    const data = await res.json();
+    const answer = data.choices?.[0]?.message?.content?.trim();
 
-// ── 3. Wikipedia fallback ──
-async function _searchWikipedia(query) {
-  const searchUrl = `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&format=json&srlimit=3&origin=*`;
-  const res = await _fetchWithTimeout(searchUrl, {
-    headers: { 'User-Agent': 'LOOI-Robot/1.0' },
-  }, 6000);
-  if (!res.ok) throw new Error(`Wiki HTTP ${res.status}`);
-  const data = await res.json();
-  const results = [];
-  const items = data?.query?.search || [];
-  if (items.length === 0) return results;
-
-  const topTitle = items[0].title;
-  const summaryUrl = `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(topTitle.replace(/ /g, '_'))}`;
-  const sumRes = await _fetchWithTimeout(summaryUrl, {
-    headers: { 'User-Agent': 'LOOI-Robot/1.0' },
-  }, 6000);
-  let summaryText = '';
-  if (sumRes.ok) {
-    const sumData = await sumRes.json();
-    summaryText = sumData.extract || '';
-  }
-
-  if (summaryText) {
-    results.push({ title: topTitle, snippet: summaryText, url: `https://en.wikipedia.org/wiki/${topTitle.replace(/ /g, '_')}`, source: 'Wikipedia' });
-  }
-
-  for (let i = 1; i < Math.min(items.length, 3); i++) {
-    const snippet = (items[i].snippet || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-    if (snippet) {
-      results.push({
-        title: items[i].title,
-        snippet: snippet + '...',
-        url: `https://en.wikipedia.org/wiki/${items[i].title.replace(/ /g, '_')}`,
-        source: 'Wikipedia',
-      });
+    if (!answer) {
+      return 'Pasensya na, walang nakuha sagot mula sa web search.';
     }
-  }
 
-  console.log(`[Search] Wikipedia: ${results.length} results`);
-  return results;
-}
+    console.log(`[GroqSearch] answer length: ${answer.length} chars`);
+    return answer;
 
-// ── Main search function: tries sources in order with fallback ──
-async function searchWeb(query) {
-  const sources = [];
-  const seen = new Set();
-  const errors = [];
-
-  // 1. Try Parallel Search Free first (real web search)
-  try {
-    const parallelResults = await _searchParallel(query);
-    for (const r of parallelResults) {
-      if (r.title && r.snippet && !seen.has(r.title)) {
-        seen.add(r.title);
-        sources.push(r);
-      }
-    }
   } catch (err) {
-    console.warn('[Search] Parallel failed:', err.message);
-    errors.push('Parallel: ' + err.message);
+    console.error('[GroqSearch] error:', err.message);
+    return `Pasensya na, nagka-error sa web search: ${err.message}`;
   }
+}
 
-  // 2. Try DDG Instant Answer (good for factual queries)
-  if (sources.length < 2) {
-    try {
-      const ddgResults = await _searchDDGInstantAnswer(query);
-      for (const r of ddgResults) {
-        if (r.title && r.snippet && !seen.has(r.title)) {
-          seen.add(r.title);
-          sources.push(r);
-        }
-      }
-    } catch (err) {
-      console.warn('[Search] DDG IA failed:', err.message);
-      errors.push('DDG: ' + err.message);
-    }
-  }
-
-  // 3. Wikipedia fallback
-  if (sources.length === 0) {
-    try {
-      const wikiResults = await _searchWikipedia(query);
-      for (const r of wikiResults) {
-        if (r.title && r.snippet && !seen.has(r.title)) {
-          seen.add(r.title);
-          sources.push(r);
-        }
-      }
-    } catch (err) {
-      console.warn('[Search] Wikipedia failed:', err.message);
-      errors.push('Wiki: ' + err.message);
-    }
-  }
-
-  console.log(`[Search] FINAL: ${sources.length} unique results for "${query}"`);
-
-  if (sources.length === 0) {
-    return `Pasensya na, hindi ako makapag-search sa web ngayon. Lahat ng sources ay nag-fail. ${errors.length > 0 ? 'Errors: ' + errors.join('; ') : ''}`;
-  }
-
-  let output = `🔍 Resulta para sa "${query}":\n\n`;
-  sources.slice(0, 5).forEach((r, i) => {
-    output += `${i + 1}. ${r.title}${r.source ? ' [' + r.source + ']' : ''}\n${r.snippet}${r.url ? '\n🔗 ' + r.url : ''}\n\n`;
-  });
-
-  return output.trim();
+// Wrapper that matches the old searchWeb interface
+async function searchWeb(query) {
+  return searchWithGroq(query);
 }
 
 // ── HTTP Routes ────────────────────────────────────────────────
@@ -917,11 +770,11 @@ const ROBOT_TOOLS = [{
     },
     {
       name: 'search_web',
-      description: 'Search the internet for real-time information, news, facts, people, places, events, or anything the user asks about. This tool tries DuckDuckGo Instant Answers, DuckDuckGo web search, and Wikipedia automatically. ALWAYS call this FIRST before answering any factual, current events, or general knowledge questions. WAIT for the results to come back before speaking. Do NOT guess or answer from memory.',
+      description: 'Search the internet using Groq's built-in web search tool. This can search the live web, visit websites, and run code to analyze data. ALWAYS call this FIRST before answering any factual question, current events, news, "who is", "what is", or general knowledge questions. WAIT for the complete answer to come back before speaking.',
       parameters: {
         type: 'OBJECT',
         properties: {
-          query: { type: 'STRING', description: 'The search query, e.g. "Philippines", "latest news today", "who is Taylor Swift"' }
+          query: { type: 'STRING', description: 'The search query in natural language, e.g. "Saan ang epicenter ng lindol sa Luzon kahapon?", "who is Taylor Swift", "latest news Philippines"' }
         },
         required: ['query']
       }
@@ -946,8 +799,8 @@ CRITICAL RULES:
 8. NEVER describe visuals from memory — always use capture_photo() first.
 9. When asked who made you / who created you / who is your creator → say April Manalo made you.
 10. You can control movement speed with the speed parameter (0-255). Slow/careful: 60-120. Normal: 180-220. Fast: 230-255. Default is 200 if not specified.
-11. For ANY factual question, current events, news, "who is", "what is", "where is", or general knowledge → FIRST call search_web(query:"<topic>"), WAIT for the results, THEN answer based ONLY on what the search returned.
-12. CRITICAL: If search returns NO results or says "hindi ako makapag-search", you MUST tell the user honestly: "Pasensya na, hindi ako makapag-search sa web ngayon." Do NOT make up information, do NOT invent sources, do NOT guess. Only speak facts that came from the search results.
+11. For ANY factual question, current events, news, "who is", "what is", "where is", or general knowledge → FIRST call search_web(query:"<topic>"), WAIT for the results to come back, THEN answer based ONLY on what the search returned.
+12. CRITICAL: The search_web tool uses Groq's built-in web search (web_search, code_interpreter, visit_website). It returns a complete researched answer with sources. Do NOT add made-up information. If the search says it found nothing, tell the user honestly.
 Examples:
 - User says something nice → run_scenario(action:"loving", led:"LED_PINK")
 - User says "move forward" → run_scenario(action:"forward")
