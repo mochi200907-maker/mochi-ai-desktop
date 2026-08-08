@@ -288,6 +288,7 @@ async function searchWithGroq(query) {
   }
 
   console.log(`[GroqSearch] Searching: "${query}"`);
+  const startTime = Date.now();
 
   try {
     const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
@@ -317,16 +318,19 @@ async function searchWithGroq(query) {
           }
         }
       }),
-      signal: AbortSignal.timeout(35000),
+      signal: AbortSignal.timeout(25000),
     });
+
+    const elapsed = Date.now() - startTime;
 
     if (!res.ok) {
       const errText = await res.text().catch(() => 'Unknown error');
-      console.error(`[GroqSearch] HTTP ${res.status}: ${errText}`);
+      console.error(`[GroqSearch] HTTP ${res.status} after ${elapsed}ms: ${errText}`);
       throw new Error(`Groq API error ${res.status}`);
     }
 
     const data = await res.json();
+    console.log(`[GroqSearch] Response received in ${elapsed}ms`);
 
     // DEBUG: log what Groq actually did
     const executedTools = data.choices?.[0]?.message?.executed_tools;
@@ -336,6 +340,7 @@ async function searchWithGroq(query) {
 
     if (!answer) {
       console.error('[GroqSearch] No content in response');
+      console.error('[GroqSearch] Full response:', JSON.stringify(data).slice(0, 500));
       return 'Pasensya na, walang nakuha sagot mula sa web search.';
     }
 
@@ -348,11 +353,11 @@ async function searchWithGroq(query) {
       return `[NO_SEARCH_PERFORMED] ${answer}`;
     }
 
-    console.log(`[GroqSearch] Search performed. Answer length: ${answer.length} chars`);
+    console.log(`[GroqSearch] ✅ Search performed. Answer: ${answer.length} chars`);
     return answer;
 
   } catch (err) {
-    console.error('[GroqSearch] error:', err.message);
+    console.error(`[GroqSearch] error after ${Date.now() - startTime}ms:`, err.message);
     return `Pasensya na, nagka-error sa web search: ${err.message}`;
   }
 }
@@ -993,60 +998,39 @@ geminiLiveWss.on('connection', (clientWs, request) => {
         else if (fc.name === 'search_web') {
           const query = args.query || '';
           console.log(`[GeminiLive:${cid}] search_web: "${query}"`);
-          // 1. Send placeholder immediately so Gemini knows we're working
-          if (gemWs.readyState === WebSocket.OPEN) {
-            gemWs.send(JSON.stringify({
-              toolResponse: {
-                functionResponses: [{
-                  id: fc.id,
-                  name: fc.name,
-                  response: { output: 'Searching the web for "' + query + '"… Please wait a moment.' }
-                }]
+          // Run search asynchronously and send ONE toolResponse when done
+          // Do NOT send placeholder or clientContent — just one clean response
+          (async () => {
+            try {
+              const result = await searchWeb(query);
+              if (gemWs.readyState === WebSocket.OPEN) {
+                console.log(`[GeminiLive:${cid}] search_web result: ${result.length} chars`);
+                gemWs.send(JSON.stringify({
+                  toolResponse: {
+                    functionResponses: [{
+                      id: fc.id,
+                      name: fc.name,
+                      response: { output: result }
+                    }]
+                  }
+                }));
               }
-            }));
-          }
-          // 2. Run search asynchronously, then send actual results + turnComplete
-          searchWeb(query).then(result => {
-            if (gemWs.readyState !== WebSocket.OPEN) return;
-            // Send actual tool response with results
-            gemWs.send(JSON.stringify({
-              toolResponse: {
-                functionResponses: [{
-                  id: fc.id,
-                  name: fc.name,
-                  response: { output: result }
-                }]
+            } catch (err) {
+              console.error(`[GeminiLive:${cid}] search_web error:`, err.message);
+              if (gemWs.readyState === WebSocket.OPEN) {
+                gemWs.send(JSON.stringify({
+                  toolResponse: {
+                    functionResponses: [{
+                      id: fc.id,
+                      name: fc.name,
+                      response: { output: 'Pasensya na, nagka-error sa web search: ' + err.message }
+                    }]
+                  }
+                }));
               }
-            }));
-            // CRITICAL: Send clientContent with turnComplete:true
-            // This tells Gemini "the tool is done, now YOU respond with speech"
-            gemWs.send(JSON.stringify({
-              clientContent: {
-                turns: [{ role: 'user', parts: [{ text: 'Search complete. Please answer the user based ONLY on the search results provided above. Do NOT call search_web again.' }] }],
-                turnComplete: true
-              }
-            }));
-          }).catch(err => {
-            console.error('[Search] async error:', err.message);
-            if (gemWs.readyState !== WebSocket.OPEN) return;
-            gemWs.send(JSON.stringify({
-              toolResponse: {
-                functionResponses: [{
-                  id: fc.id,
-                  name: fc.name,
-                  response: { output: 'Web search failed. Please try again.' }
-                }]
-              }
-            }));
-            gemWs.send(JSON.stringify({
-              clientContent: {
-                turns: [{ role: 'user', parts: [{ text: 'The search failed. Please tell the user to try again.' }] }],
-                turnComplete: true
-              }
-            }));
-          });
+            }
+          })();
         }
-      }
 
       if (immediateResponses.length && gemWs.readyState === WebSocket.OPEN) {
         gemWs.send(JSON.stringify({ toolResponse: { functionResponses: immediateResponses } }));
