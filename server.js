@@ -495,7 +495,7 @@ async function _searchWikipedia(query) {
   const searchUrl = `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&format=json&srlimit=3&origin=*`;
   const res = await _fetchWithTimeout(searchUrl, {
     headers: { 'User-Agent': 'LOOI-Robot/1.0' },
-  }, 8000);
+  }, 6000);
   if (!res.ok) throw new Error(`Wiki HTTP ${res.status}`);
   const data = await res.json();
   const results = [];
@@ -507,7 +507,7 @@ async function _searchWikipedia(query) {
   const summaryUrl = `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(topTitle.replace(/ /g, '_'))}`;
   const sumRes = await _fetchWithTimeout(summaryUrl, {
     headers: { 'User-Agent': 'LOOI-Robot/1.0' },
-  }, 8000);
+  }, 6000);
   let summaryText = '';
   if (sumRes.ok) {
     const sumData = await sumRes.json();
@@ -533,79 +533,37 @@ async function _searchWikipedia(query) {
   return results;
 }
 
-// ── Main search function: tries multiple sources in order ──
-async function searchWeb(query) {
+// ── Main search function: tries multiple sources in parallel ──
+async function searchWeb(query, maxWaitMs = 12000) {
   const sources = [];
+  const seen = new Set();
   let lastError = '';
 
-  // 1. Try DDG Instant Answer (fastest, official API)
-  try {
-    const iaResults = await _searchDDGInstantAnswer(query);
-    if (iaResults.length > 0) {
-      console.log(`[Search] DDG Instant Answer: ${iaResults.length} results`);
-      sources.push(...iaResults);
-    }
-  } catch (err) {
-    console.warn('[Search] DDG Instant Answer failed:', err.message);
-    lastError = err.message;
-  }
+  // Run all searches in parallel with individual timeouts
+  const promises = [
+    _searchDDGInstantAnswer(query).catch(e => { console.warn('[Search] IA failed:', e.message); lastError = e.message; return []; }),
+    _searchDDGLite(query).catch(e => { console.warn('[Search] Lite failed:', e.message); lastError = e.message; return []; }),
+    _searchDDGHtml(query).catch(e => { console.warn('[Search] HTML failed:', e.message); lastError = e.message; return []; }),
+    _searchWikipedia(query).catch(e => { console.warn('[Search] Wiki failed:', e.message); lastError = e.message; return []; }),
+  ];
 
-  // 2. Try DDG Lite (if IA gave few/no results)
-  if (sources.length < 2) {
-    try {
-      const liteResults = await _searchDDGLite(query);
-      if (liteResults.length > 0) {
-        console.log(`[Search] DDG Lite: ${liteResults.length} results`);
-        // Merge, avoiding duplicates
-        const seen = new Set(sources.map(r => r.title));
-        for (const r of liteResults) {
-          if (!seen.has(r.title)) {
-            seen.add(r.title);
-            sources.push(r);
-          }
+  // Race: return as soon as we have enough results OR timeout
+  const startTime = Date.now();
+  const results = await Promise.allSettled(promises);
+
+  for (const res of results) {
+    if (res.status === 'fulfilled' && Array.isArray(res.value)) {
+      for (const r of res.value) {
+        if (r.title && r.snippet && !seen.has(r.title)) {
+          seen.add(r.title);
+          sources.push(r);
         }
       }
-    } catch (err) {
-      console.warn('[Search] DDG Lite failed:', err.message);
-      lastError = err.message;
     }
   }
 
-  // 3. Try DDG HTML (if still few results)
-  if (sources.length < 2) {
-    try {
-      const htmlResults = await _searchDDGHtml(query);
-      if (htmlResults.length > 0) {
-        console.log(`[Search] DDG HTML: ${htmlResults.length} results`);
-        const seen = new Set(sources.map(r => r.title));
-        for (const r of htmlResults) {
-          if (!seen.has(r.title)) {
-            seen.add(r.title);
-            sources.push(r);
-          }
-        }
-      }
-    } catch (err) {
-      console.warn('[Search] DDG HTML failed:', err.message);
-      lastError = err.message;
-    }
-  }
+  console.log(`[Search] Total unique results: ${sources.length} in ${Date.now() - startTime}ms`);
 
-  // 4. Wikipedia fallback (for factual queries)
-  if (sources.length === 0) {
-    try {
-      const wikiResults = await _searchWikipedia(query);
-      if (wikiResults.length > 0) {
-        console.log(`[Search] Wikipedia: ${wikiResults.length} results`);
-        sources.push(...wikiResults);
-      }
-    } catch (err) {
-      console.warn('[Search] Wikipedia failed:', err.message);
-      lastError = err.message;
-    }
-  }
-
-  // Format output
   if (sources.length === 0) {
     return `Pasensya na, walang nahanap na resulta para sa "${query}". ${lastError ? '(Error: ' + lastError + ')' : ''}`;
   }
@@ -1248,32 +1206,57 @@ geminiLiveWss.on('connection', (clientWs, request) => {
         else if (fc.name === 'search_web') {
           const query = args.query || '';
           console.log(`[GeminiLive:${cid}] search_web: "${query}"`);
-          immediateResponses.push({ id: fc.id, name: fc.name, response: { output: 'Searching the web for: ' + query } });
+          // 1. Send placeholder immediately so Gemini knows we're working
+          if (gemWs.readyState === WebSocket.OPEN) {
+            gemWs.send(JSON.stringify({
+              toolResponse: {
+                functionResponses: [{
+                  id: fc.id,
+                  name: fc.name,
+                  response: { output: 'Searching the web for "' + query + '"… Please wait a moment.' }
+                }]
+              }
+            }));
+          }
+          // 2. Run search asynchronously, then send actual results + turnComplete
           searchWeb(query).then(result => {
-            if (gemWs.readyState === WebSocket.OPEN) {
-              gemWs.send(JSON.stringify({
-                toolResponse: {
-                  functionResponses: [{
-                    id: fc.id,
-                    name: fc.name,
-                    response: { output: result }
-                  }]
-                }
-              }));
-            }
+            if (gemWs.readyState !== WebSocket.OPEN) return;
+            // Send actual tool response with results
+            gemWs.send(JSON.stringify({
+              toolResponse: {
+                functionResponses: [{
+                  id: fc.id,
+                  name: fc.name,
+                  response: { output: result }
+                }]
+              }
+            }));
+            // CRITICAL: Send clientContent with turnComplete:true
+            // This tells Gemini "the tool is done, now YOU respond with speech"
+            gemWs.send(JSON.stringify({
+              clientContent: {
+                turns: [{ role: 'user', parts: [{ text: 'Search complete. Please answer the user based ONLY on the search results provided above. Do NOT call search_web again.' }] }],
+                turnComplete: true
+              }
+            }));
           }).catch(err => {
             console.error('[Search] async error:', err.message);
-            if (gemWs.readyState === WebSocket.OPEN) {
-              gemWs.send(JSON.stringify({
-                toolResponse: {
-                  functionResponses: [{
-                    id: fc.id,
-                    name: fc.name,
-                    response: { output: 'Web search failed. Please try again.' }
-                  }]
-                }
-              }));
-            }
+            if (gemWs.readyState !== WebSocket.OPEN) return;
+            gemWs.send(JSON.stringify({
+              toolResponse: {
+                functionResponses: [{
+                  id: fc.id,
+                  name: fc.name,
+                  response: { output: 'Web search failed. Please try again.' }
+                }]
+              }
+            }));
+            gemWs.send(JSON.stringify({
+              clientContent: {
+                turns: [{ role: 'user', parts: [{ text: 'The search failed. Please tell the user to try again.' }] }],
+                turnComplete: true
+              }
+            }));
           });
         }
       }
