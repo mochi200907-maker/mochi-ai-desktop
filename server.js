@@ -290,78 +290,122 @@ async function searchWithGroq(query) {
   console.log(`[GroqSearch] Searching: "${query}"`);
   const startTime = Date.now();
 
+  // Try 1: Groq Compound model with minimal payload
   try {
+    const payload = {
+      model: 'groq/compound',
+      messages: [
+        { role: 'system', content: 'Search the web and answer factually. Cite sources.' },
+        { role: 'user', content: query }
+      ],
+      max_completion_tokens: 1024,
+      temperature: 0.5,
+    };
+
+    const body = JSON.stringify(payload);
+    console.log(`[GroqSearch] Compound request: ${body.length} bytes`);
+
     const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${groqKey}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        model: 'groq/compound',
-        messages: [
-          {
-            role: 'system',
-            content: 'You are a web search assistant. Search the internet for the user\'s query and provide accurate, factual, up-to-date information. Always cite your sources. If you cannot find reliable information, say so honestly. Respond in the same language as the user\'s query.'
-          },
-          {
-            role: 'user',
-            content: query
-          }
-        ],
-        temperature: 0.5,
-        max_completion_tokens: 2048,
-        top_p: 1,
-        compound_custom: {
-          tools: {
-            enabled_tools: ['web_search', 'code_interpreter', 'visit_website']
-          }
-        }
-      }),
-      signal: AbortSignal.timeout(25000),
+      body,
+      signal: AbortSignal.timeout(20000),
     });
 
     const elapsed = Date.now() - startTime;
 
-    if (!res.ok) {
-      const errText = await res.text().catch(() => 'Unknown error');
-      console.error(`[GroqSearch] HTTP ${res.status} after ${elapsed}ms: ${errText}`);
-      throw new Error(`Groq API error ${res.status}`);
+    if (res.ok) {
+      const data = await res.json();
+      console.log(`[GroqSearch] Compound OK in ${elapsed}ms`);
+
+      const executedTools = data.choices?.[0]?.message?.executed_tools;
+      console.log(`[GroqSearch] executed_tools:`, JSON.stringify(executedTools || 'NONE'));
+
+      const answer = data.choices?.[0]?.message?.content?.trim();
+      if (answer) {
+        const didSearch = executedTools && executedTools.length > 0 &&
+          executedTools.some(t => t.type === 'search' || t.type === 'web_search');
+        if (didSearch) {
+          console.log(`[GroqSearch] ✅ Compound search done. Answer: ${answer.length} chars`);
+          return answer;
+        }
+        console.warn('[GroqSearch] Compound did not search, trying fallback...');
+      }
+    } else {
+      const errText = await res.text().catch(() => 'Unknown');
+      console.error(`[GroqSearch] Compound HTTP ${res.status}: ${errText}`);
     }
-
-    const data = await res.json();
-    console.log(`[GroqSearch] Response received in ${elapsed}ms`);
-
-    // DEBUG: log what Groq actually did
-    const executedTools = data.choices?.[0]?.message?.executed_tools;
-    console.log(`[GroqSearch] executed_tools:`, JSON.stringify(executedTools || 'NONE'));
-
-    const answer = data.choices?.[0]?.message?.content?.trim();
-
-    if (!answer) {
-      console.error('[GroqSearch] No content in response');
-      console.error('[GroqSearch] Full response:', JSON.stringify(data).slice(0, 500));
-      return 'Pasensya na, walang nakuha sagot mula sa web search.';
-    }
-
-    // Check if Groq actually searched
-    const didSearch = executedTools && executedTools.length > 0 &&
-      executedTools.some(t => t.type === 'search' || t.type === 'web_search');
-
-    if (!didSearch) {
-      console.warn('[GroqSearch] WARNING: Groq did NOT perform web search!');
-      return `[NO_SEARCH_PERFORMED] ${answer}`;
-    }
-
-    console.log(`[GroqSearch] ✅ Search performed. Answer: ${answer.length} chars`);
-    return answer;
-
   } catch (err) {
-    console.error(`[GroqSearch] error after ${Date.now() - startTime}ms:`, err.message);
-    return `Pasensya na, nagka-error sa web search: ${err.message}`;
+    console.error(`[GroqSearch] Compound error:`, err.message);
   }
-}
 
+  // Try 2: Regular Groq model + manual web context via Jina AI
+  console.log('[GroqSearch] Trying fallback with regular model + web context...');
+  try {
+    // Use Jina AI to get web context
+    const jinaUrl = `https://s.jina.ai/http://www.google.com/search?q=${encodeURIComponent(query)}`;
+    const jinaRes = await fetch(jinaUrl, {
+      headers: { 'User-Agent': 'Mozilla/5.0' },
+      signal: AbortSignal.timeout(10000),
+    });
+
+    let webContext = '';
+    if (jinaRes.ok) {
+      webContext = await jinaRes.text();
+      console.log(`[GroqSearch] Jina context: ${webContext.length} chars`);
+    } else {
+      console.warn('[GroqSearch] Jina failed, using query only');
+    }
+
+    const fallbackPayload = {
+      model: 'llama-3.3-70b-versatile',
+      messages: [
+        {
+          role: 'system',
+          content: 'You are a helpful assistant. Answer based on the web context provided. If the context is insufficient, say so honestly. Cite sources when possible.'
+        },
+        {
+          role: 'user',
+          content: webContext
+            ? `Query: ${query}\n\nWeb context:\n${webContext.slice(0, 4000)}\n\nPlease answer the query based on the web context above.`
+            : `Search the web for: ${query}\n\nPlease provide a factual answer with sources.`
+        }
+      ],
+      max_completion_tokens: 1024,
+      temperature: 0.5,
+    };
+
+    const fbRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${groqKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(fallbackPayload),
+      signal: AbortSignal.timeout(20000),
+    });
+
+    if (fbRes.ok) {
+      const fbData = await fbRes.json();
+      const fbAnswer = fbData.choices?.[0]?.message?.content?.trim();
+      if (fbAnswer) {
+        console.log(`[GroqSearch] ✅ Fallback answer: ${fbAnswer.length} chars`);
+        return fbAnswer;
+      }
+    } else {
+      const errText = await fbRes.text().catch(() => 'Unknown');
+      console.error(`[GroqSearch] Fallback HTTP ${fbRes.status}: ${errText}`);
+    }
+  } catch (err) {
+    console.error(`[GroqSearch] Fallback error:`, err.message);
+  }
+
+  console.error(`[GroqSearch] All methods failed after ${Date.now() - startTime}ms`);
+  return 'Pasensya na, hindi ako makapag-search sa web ngayon. Subukan mo ulit mamaya.';
+}
 // Wrapper that matches the old searchWeb interface
 async function searchWeb(query) {
   return searchWithGroq(query);
