@@ -812,14 +812,6 @@
     }
     .waveform-bar { width: 4px; height: 6px; background: #00d2ff; border-radius: 3px; transform-origin: center; transition: height 0.08s ease, background 0.3s ease; }
     #state-text { color: #00d2ff; font-size: 11px; font-weight: bold; text-transform: uppercase; letter-spacing: 2px; margin-left: 6px; opacity: 0.7; }
-    #roam-status {
-      position: absolute; top: max(42px,calc(env(safe-area-inset-top) + 30px)); right: max(12px,env(safe-area-inset-right));
-      z-index: 30; padding: 6px 10px; border: 1px solid #00d2ff33; border-radius: 999px;
-      background: rgba(3,10,20,0.72); color: #6e879b; font-size: 9px; font-weight: 800;
-      letter-spacing: 1.2px; pointer-events: auto; cursor: pointer; transition: .2s ease;
-      line-height: 1; font-family: inherit; white-space: nowrap;
-    }
-    #roam-status.active { color: #8affd3; border-color: #00e5a088; box-shadow: 0 0 16px #00e5a022; }
     #search-status {
       position: absolute; top: max(48px,calc(env(safe-area-inset-top) + 38px)); left: 50%;
       transform: translateX(-50%) translateY(-8px); display: flex; align-items: center; gap: 9px;
@@ -935,7 +927,6 @@
       <div class="waveform-bar" id="wb7"></div>
       <span id="state-text">IDLE</span>
     </div>
-    <button id="roam-status" aria-live="polite" type="button">AI ROAM OFF</button>
     <div id="search-status" aria-live="polite">
       <span class="search-orbit"></span><span>SEARCHING WEB</span>
     </div>
@@ -1485,123 +1476,6 @@
   }
   function stopLiveFrameStream(){if(_liveFrameTimer){clearInterval(_liveFrameTimer);_liveFrameTimer=null;}}
 
-  // ── AUTONOMOUS AI ROAM ───────────────────────────────────
-  let roamEnabled=false, roamStream=null, roamVideo=null, roamCanvas=null;
-  let roamBusy=false, roamSession=0, roamLastDecisionAt=0;
-  const roamStatus=document.getElementById('roam-status');
-
-  function setRoamStatus(text, active=roamEnabled){
-    if(!roamStatus)return;
-    roamStatus.textContent=text;
-    roamStatus.classList.toggle('active',active);
-  }
-
-  async function openRoamCamera(){
-    if(roamVideo&&roamVideo.readyState>=2)return true;
-    try{
-      if(roamStream)roamStream.getTracks().forEach(t=>t.stop());
-      roamStream=await navigator.mediaDevices.getUserMedia({
-        video:{facingMode:{ideal:'environment'},width:{ideal:640},height:{ideal:480}},
-        audio:false
-      });
-      roamVideo=document.createElement('video');
-      roamVideo.srcObject=roamStream; roamVideo.playsInline=true; roamVideo.muted=true;
-      await roamVideo.play();
-      await new Promise(r=>setTimeout(r,350));
-      return roamVideo.readyState>=2;
-    }catch(err){
-      console.warn('[Roam] camera failed:',err.message);
-      return false;
-    }
-  }
-
-  function closeRoamCamera(){
-    if(roamStream)roamStream.getTracks().forEach(t=>t.stop());
-    roamStream=null; roamVideo=null; roamCanvas=null;
-  }
-
-  async function requestRoamDecision(){
-    if(!roamEnabled||roamBusy||!roamVideo||roamVideo.readyState<2)return;
-    roamBusy=true;
-    const session=roamSession;
-    try{
-      if(!roamCanvas){
-        roamCanvas=document.createElement('canvas');
-        roamCanvas.width=320; roamCanvas.height=240;
-      }
-      const ctx=roamCanvas.getContext('2d');
-      ctx.drawImage(roamVideo,0,0,320,240);
-      const image=roamCanvas.toDataURL('image/jpeg',0.55);
-      const response=await fetch('/api/vision/roam',{
-        method:'POST',
-        headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({image}),
-      });
-      if(!response.ok)throw new Error(`AI returned ${response.status}`);
-      const decision=await response.json();
-      if(!roamEnabled||session!==roamSession)return;
-      roamLastDecisionAt=Date.now();
-      const command=decision.command==='STOP'?'STOP':decision.command;
-      setRoamStatus(`AI ROAM • ${command} • ${Math.round((decision.confidence||0)*100)}%`);
-      showTranscript(`🤖 ${command} — ${decision.reason||'safe next move'}`);
-      if(command==='STOP'){
-        sendBLECommand('STOP');
-      }else{
-        sendDirectionalMove(command,decision.speed,decision.durationMs);
-      }
-    }catch(err){
-      console.warn('[Roam] decision failed:',err.message);
-      if(roamEnabled&&session===roamSession){
-        sendBLECommand('STOP');
-        setRoamStatus('AI ROAM • SAFETY STOP');
-      }
-    }finally{
-      roamBusy=false;
-    }
-  }
-
-  async function startAIRoam(){
-    if(roamEnabled)return;
-    roamEnabled=true; roamSession++;
-    robotState='THINKING'; currentExpression='SCANNING';
-    setRoamStatus('AI ROAM • STARTING');
-    stopFrontCamera();
-    sendBLECommand('ROAM_ON'); sendBLECommand('LED_CYAN');
-    stopLiveFrameStream();
-    const cameraReady=await openRoamCamera();
-    if(!cameraReady){
-      roamEnabled=false; roamSession++;
-      sendBLECommand('STOP'); sendBLECommand('ROAM_OFF'); sendBLECommand('LED_OFF');
-      setRoamStatus('AI ROAM OFF',false);
-      showError('AI roam needs camera access');
-      return;
-    }
-    const session=roamSession;
-    setRoamStatus('AI ROAM • WATCHING');
-    requestRoamDecision();
-    const tick=async()=>{
-      if(!roamEnabled||session!==roamSession)return;
-      await requestRoamDecision();
-      if(roamEnabled&&session===roamSession)setTimeout(tick,700);
-    };
-    setTimeout(tick,700);
-  }
-
-  function stopAIRoam(message='AI ROAM OFF'){
-    roamEnabled=false; roamSession++;
-    roamBusy=false;
-    closeRoamCamera();
-    sendBLECommand('STOP'); sendBLECommand('ROAM_OFF'); sendBLECommand('LED_OFF');
-    robotState='IDLE'; currentExpression='IDLE';
-    setRoamStatus(message,false);
-    startFrontCamera().catch(()=>{});
-  }
-
-  roamStatus?.addEventListener('click',()=>{
-    if(roamEnabled) stopAIRoam();
-    else startAIRoam();
-  });
-
   function playCameraShutter(){
     try{
       const sCtx=new(window.AudioContext||window.webkitAudioContext)(),sr=sCtx.sampleRate;
@@ -1937,19 +1811,13 @@
   }
 
   let bleWriteQueue=Promise.resolve();
-  function sendDirectionalMove(cmd, speed, durationMs){
+  function sendDirectionalMove(cmd, speed){
     cmd=String(cmd||'').trim().toUpperCase();
     if(!cmd||cmd==='NONE')return;
     const speedSuffix = (typeof speed==='number' && speed>=0 && speed<=255) ? ':'+Math.round(speed) : '';
-    const durationSuffix = (typeof durationMs==='number' && durationMs>0) ? ':'+Math.round(durationMs) : '';
-    if(durationSuffix){
-      sendBLECommand(cmd + speedSuffix + durationSuffix);
-    }else if(cmd==='LEFT'||cmd==='RIGHT'){
-      sendBLECommand(cmd + speedSuffix);
-      setTimeout(()=>sendBLECommand('FORWARD'+speedSuffix),550);
-    }else{
-      sendBLECommand(cmd + speedSuffix);
-    }
+    const fullCmd = cmd + speedSuffix;
+    if(cmd==='LEFT'||cmd==='RIGHT'){sendBLECommand(fullCmd);setTimeout(()=>sendBLECommand('FORWARD'+speedSuffix),550);}
+    else sendBLECommand(fullCmd);
   }
   function sendBLECommand(cmd){
     cmd=String(cmd||'').trim().toUpperCase();
@@ -2062,11 +1930,6 @@
         return;
       }
       if(msg.error){showError('Gemini: '+msg.error);robotState='IDLE';return;}
-      if(msg.roamMode){
-        if(msg.roamMode.enabled) startAIRoam();
-        else stopAIRoam('AI ROAM STOPPED');
-        return;
-      }
       if(msg.needPhoto){
         robotState='THINKING'; currentExpression='CAMERA';
         showTranscript('📸 Taking a look...');
