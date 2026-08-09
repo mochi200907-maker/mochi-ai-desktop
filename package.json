@@ -5,7 +5,26 @@
   "main": "server.js",
   "type": "module",
   "engines": {
+    "node": ">=20.0.0"{
+  "name": "looi-ai-robot",
+  "version": "1.0.0",
+  "description": "LOOI AI Desktop Robot — Edge TTS, Groq LLM, Canvas face UI",
+  "main": "server.js",
+  "type": "module",
+  "engines": {
     "node": ">=20.0.0"
+  },
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.22.2",
+    "groq-sdk": "^0.7.0",
+    "node-edge-tts": "^1.2.10",
+    "ws": "^8.21.3"
+  }
+}
+
   },
   "scripts": {
     "start": "node server.js"
