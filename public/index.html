@@ -1,0 +1,2175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <!-- Full-screen web app on iOS (Add to Home Screen) -->
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="mobile-web-app-capable" content="yes">
+  <title>LOOI AI Robot — by April Manalo</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    /* 100dvh = real visible height that adjusts with mobile browser chrome */
+    html { width: 100%; height: 100%; overflow: hidden; font-family: system-ui, -apple-system, sans-serif; }
+    body { width: 100%; height: 100dvh; min-height: -webkit-fill-available; overflow: hidden; background: #050812; }
+
+    #robot-screen {
+      position: fixed; inset: 0; width: 100%; height: 100dvh;
+      background:
+        radial-gradient(circle at 50% 46%, rgba(97,211,255,0.16), transparent 34%),
+        radial-gradient(circle at 50% 120%, rgba(126,224,186,0.08), transparent 44%),
+        linear-gradient(180deg, #050812 0%, #02040a 100%);
+      overflow: hidden;
+      display: flex; justify-content: center; align-items: center;
+    }
+
+    /* ── LOOI FACE CANVAS ──────────────────────────────────────── */
+    #faceCanvas {
+      --eye-bg: #070a12;
+      --eye-core: #bdf3ff;
+      --eye-glow: #2632ff;
+      --eye-scan: rgba(185,255,255,0.72);
+      --blink-time: 360ms;
+      --soft-close-time: 420ms;
+      --sleep-time: 700ms;
+      --photo-time: 2400ms;
+      --follow-open-time: 900ms;
+      --follow-stop-time: 800ms;
+      --bite-time: 3200ms;
+      --finish-burger-time: 2200ms;
+      --drink-open-time: 1600ms;
+      --finish-drink-time: 1800ms;
+      --question-time: 2200ms;
+      --angry-time: 1800ms;
+      --love-time: 2400ms;
+      --shock-time: 1700ms;
+      --tell-open-time: 1400ms;
+      --tell-loop-time: 1600ms;
+      --tell-finish-time: 1200ms;
+      --kiss-time: 2600ms;
+      --wake-time: 1900ms;
+      --look-x: 0px;
+      --look-scale-y: 1;
+      --glow-dir: 1;
+      --expression-intensity: 1;
+      position: fixed; inset: 0;
+      display: grid; place-items: center;
+      width: 100%; height: 100%;
+      overflow: hidden;
+      background: var(--eye-bg);
+    }
+
+    .looi-eyes {
+      position: absolute; inset: 0;
+      display: flex; align-items: center; justify-content: center;
+      gap: clamp(78px, 18vw, 260px);
+      transform: translateX(var(--look-x)) scaleY(var(--look-scale-y));
+      transition: transform 520ms cubic-bezier(0.2,0.9,0.25,1);
+    }
+    .looi-eye {
+      position: relative;
+      width: clamp(126px,25vw,258px); height: clamp(104px,20vw,214px);
+      transform: translateY(-10px);
+    }
+    .looi-eye__glow, .looi-eye__core { position: absolute; inset: 0; border-radius: 50%; }
+    .looi-eye__glow {
+      z-index: 1; background: var(--eye-glow);
+      transform: translate(calc(var(--glow-dir)*18px),24px);
+      filter: blur(5px); opacity: 0.94;
+      transition: transform 520ms cubic-bezier(0.2,0.9,0.25,1), opacity 220ms ease;
+    }
+    .looi-eye__core {
+      z-index: 2; background: var(--eye-core);
+      box-shadow: 0 0 2px rgba(210,255,255,0.55);
+      transition: background 220ms ease, box-shadow 220ms ease;
+    }
+    .looi-eye__lid {
+      position: absolute; z-index: 4;
+      left: -28%; top: -42%; width: 156%; height: 86%;
+      border-radius: 0 0 58% 58% / 0 0 78% 78%;
+      background: var(--eye-bg);
+      transform: translateY(-120%); pointer-events: none;
+    }
+    .looi-eye__love-lid {
+      position: absolute; z-index: 4;
+      left: -18%; top: auto; bottom: -34%; width: 136%; height: 78%;
+      border-radius: 58% 58% 0 0 / 78% 78% 0 0;
+      background: var(--eye-bg);
+      transform: translateY(125%); pointer-events: none;
+    }
+    .looi-eye__scan-line {
+      position: absolute; z-index: 3; left: 50%; top: 50%;
+      width: 420%; height: 9px; border-radius: 999px;
+      background: linear-gradient(90deg,transparent 0%,rgba(95,245,255,0.55) 16%,var(--eye-scan) 50%,rgba(95,245,255,0.45) 84%,transparent 100%);
+      opacity: 0; transform: translate(-50%,-50%) scaleX(0.25); pointer-events: none;
+    }
+
+    /* ── CAMERA ICON ── */
+    .looi-camera-icon {
+      position: absolute; z-index: 6;
+      left: 50%; bottom: 9%;
+      width: clamp(210px,25vw,330px); height: clamp(130px,15vw,205px);
+      transform: translate(-50%,140%) scale(0.9); opacity: 0; pointer-events: none;
+    }
+    .looi-camera-icon__body {
+      position: absolute; left: 8%; right: 8%; bottom: 5%; height: 66%;
+      border-radius: 12px; background: #f7f7f7; box-shadow: 0 6px 0 rgba(0,0,0,0.18);
+    }
+    .looi-camera-icon__body::before, .looi-camera-icon__body::after {
+      content: ""; position: absolute; top: 0; width: 22%; height: 100%; background: #e9a13a;
+    }
+    .looi-camera-icon__body::before { left: 0; }
+    .looi-camera-icon__body::after { right: 0; }
+    .looi-camera-icon__top {
+      position: absolute; left: 25%; top: 6%; width: 34%; height: 26%;
+      border-radius: 8px 8px 0 0; background: #f7f7f7;
+    }
+    .looi-camera-icon__lens {
+      position: absolute; left: 50%; top: 56%; width: 42%; aspect-ratio: 1;
+      border-radius: 50%; transform: translate(-50%,-50%);
+      background: radial-gradient(circle at 48% 54%, #0c1719 0 20%, #0a6d66 21% 32%, #132527 33% 54%, #343434 55% 68%, #f3f3f3 69% 100%);
+      box-shadow: inset 0 0 0 5px #d8d8d8, 0 0 12px rgba(95,245,255,0.25);
+    }
+    .looi-camera-icon__flash-dot {
+      position: absolute; right: 25%; top: 31%; width: 9%; aspect-ratio: 1;
+      border-radius: 3px; background: #113434; box-shadow: inset 0 0 0 3px #f7f7f7;
+    }
+
+    /* ── FOLLOW TARGET ── */
+    .looi-follow-target {
+      position: absolute; z-index: 5;
+      left: 50%; bottom: 7%;
+      width: clamp(120px,15vw,210px); height: clamp(210px,24vw,340px);
+      opacity: 0; transform: translate(-50%,130%) rotate(-38deg) scale(0.9);
+      transform-origin: 50% 78%; pointer-events: none;
+    }
+    .looi-follow-target::before {
+      content: ""; position: absolute; left: 50%; top: 0; width: 62%; aspect-ratio: 1;
+      border: clamp(8px,1vw,14px) solid #8fa4d4; border-radius: 50%;
+      transform: translateX(-50%); background: rgba(220,230,248,0.65);
+      box-shadow: 0 0 14px rgba(49,216,255,0.65), inset 0 0 12px rgba(255,255,255,0.65);
+    }
+    .looi-follow-target::after {
+      content: ""; position: absolute; left: 50%; top: 44%; width: 22%; height: 48%;
+      border-radius: 999px; transform: translateX(-50%);
+      background: linear-gradient(180deg, #4a67ad 0 23%, #8fa4d4 24% 34%, #4a67ad 35% 45%, #ffc14d 46% 100%);
+      box-shadow: 0 0 10px rgba(49,216,255,0.45);
+    }
+    .looi-follow-shine {
+      position: absolute; z-index: 6; left: 42%; top: 10%; width: 20%; height: 8%;
+      border-radius: 999px; border-top: 5px solid rgba(255,255,255,0.85);
+      opacity: 0; transform: rotate(8deg); pointer-events: none;
+    }
+
+    /* ── BURGER ── */
+    .looi-burger {
+      position: absolute; z-index: 6; left: 50%; bottom: 11%;
+      width: clamp(95px,11vw,165px); height: clamp(75px,8vw,120px);
+      opacity: 0; transform: translate(-50%,120%) scale(0.86); pointer-events: none;
+    }
+    .looi-burger > * { position: absolute; }
+    .looi-burger__bun-top {
+      left: 8%; top: 0; width: 84%; height: 42%;
+      border-radius: 999px 999px 18px 18px;
+      background: linear-gradient(#ffd36d,#e98725);
+      box-shadow: inset -8px -8px 0 rgba(190,82,12,0.18), 0 0 10px rgba(255,191,58,0.35);
+    }
+    .looi-burger__bun-top::before, .looi-burger__bun-top::after {
+      content: ""; position: absolute; width: 6px; height: 3px;
+      border-radius: 999px; background: rgba(255,255,255,0.65);
+    }
+    .looi-burger__bun-top::before { left: 28%; top: 28%; transform: rotate(18deg); }
+    .looi-burger__bun-top::after  { right: 24%; top: 34%; transform: rotate(-14deg); }
+    .looi-burger__bite {
+      z-index: 4; right: 3%; top: -7%; width: 36%; aspect-ratio: 1;
+      border-radius: 50%; background: var(--eye-bg); opacity: 0; transform: scale(0.2);
+      box-shadow: -12px 14px 0 -2px var(--eye-bg), -30px 6px 0 -6px var(--eye-bg);
+    }
+    .looi-burger__cheese { left: 12%; top: 42%; width: 76%; height: 18%; background: #ffd830; clip-path: polygon(0 0,100% 0,92% 100%,70% 55%,48% 100%,26% 55%,8% 100%); }
+    .looi-burger__lettuce { left: 10%; top: 52%; width: 80%; height: 18%; background: #35c74a; border-radius: 999px; }
+    .looi-burger__patty   { left: 13%; top: 62%; width: 74%; height: 19%; border-radius: 999px; background: #6a2f1b; }
+    .looi-burger__bun-bottom { left: 12%; bottom: 0; width: 76%; height: 25%; border-radius: 12px 12px 999px 999px; background: linear-gradient(#f4a63b,#d56d20); }
+
+    /* ── EATING MOUTH ── */
+    .looi-eating-mouth {
+      position: absolute; z-index: 5;
+      left: 50%; bottom: calc(11% + clamp(75px,8vw,120px) - 2px);
+      width: clamp(52px,5.2vw,82px); height: clamp(32px,3.2vw,50px);
+      opacity: 0; transform: translate(-50%,115px) scale(0.72); pointer-events: none;
+    }
+    .looi-eating-mouth::before {
+      content: ""; position: absolute; left: 50%; top: 54%; width: 72%; height: 72%;
+      border: clamp(5px,0.6vw,8px) solid var(--eye-core); border-radius: 50%;
+      transform: translate(-50%,-50%); filter: drop-shadow(0 0 8px rgba(95,245,255,0.72));
+    }
+    .looi-eating-mouth::after {
+      content: ""; position: absolute; left: 63%; top: 39%; width: 12%; height: 48%;
+      border-radius: 999px; background: var(--eye-core); transform: rotate(12deg);
+      filter: drop-shadow(0 0 6px rgba(95,245,255,0.65));
+    }
+    .looi-eating-crumb {
+      position: absolute; z-index: 7; left: 50%; top: 61%;
+      width: 8px; aspect-ratio: 1; border-radius: 50%;
+      background: #ffd36d; opacity: 0; box-shadow: 0 0 8px rgba(255,211,109,0.55); pointer-events: none;
+    }
+
+    /* ── DRINK ── */
+    .looi-drink-can {
+      position: absolute; z-index: 8; left: 50%; bottom: 7%;
+      width: clamp(54px,5.6vw,88px); height: clamp(98px,10.4vw,158px);
+      opacity: 0; transform: translate(-50%,130%) rotate(-13deg) scale(0.92);
+      border-radius: 13px 13px 20px 20px;
+      background: linear-gradient(105deg,transparent 0 9%,rgba(255,255,255,0.35) 10% 24%,transparent 25% 100%),
+                  linear-gradient(90deg,#a53237 0 20%,#ffb5b5 21% 44%,#d74343 45% 72%,#8e272d 73%);
+      box-shadow: inset -8px 0 0 rgba(0,0,0,0.16), 0 0 12px rgba(255,80,80,0.3); pointer-events: none;
+    }
+    .looi-drink-can::before {
+      content: ""; position: absolute; left: 9%; right: 9%; top: -8%; height: 13%;
+      border-radius: 50%; background: linear-gradient(#d7eef0,#7a9298); box-shadow: inset 0 -4px 0 rgba(0,0,0,0.18);
+    }
+    .looi-drink-can::after {
+      content: "COLA"; position: absolute; left: 50%; top: 50%; color: white;
+      font: 900 clamp(10px,1.25vw,16px)/1 system-ui,sans-serif; letter-spacing: 0.04em;
+      transform: translate(-50%,-50%) rotate(88deg); text-shadow: 0 1px 1px rgba(0,0,0,0.25);
+    }
+    .looi-drink-straw {
+      position: absolute; z-index: 7; left: 50%;
+      bottom: calc(7% + clamp(74px,8vw,118px));
+      width: clamp(135px,14.5vw,230px); height: clamp(118px,12.5vw,196px);
+      opacity: 0; transform: translate(-50%,100px) rotate(-13deg); pointer-events: none; overflow: visible;
+    }
+    .looi-drink-straw__path { fill: none; stroke: #e8e8e8; stroke-width: 5; stroke-linecap: round; stroke-linejoin: round; filter: drop-shadow(0 1px 0 rgba(0,0,0,0.22)); }
+    .looi-drink-straw__shadow { fill: none; stroke: rgba(0,0,0,0.18); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; transform: translate(3px,2px); }
+    .looi-drink-mouth {
+      position: absolute; z-index: 9; left: 54.2%; top: 60.6%;
+      width: clamp(50px,5vw,84px); height: clamp(38px,3.8vw,64px);
+      opacity: 0; transform: translate(-50%,22px) scale(0.7); pointer-events: none;
+    }
+    .looi-drink-mouth::before {
+      content: ""; position: absolute; left: 50%; top: 50%; z-index: 1; width: 56%; height: 56%;
+      border: clamp(7px,0.75vw,10px) solid #62eef3; border-right: 0; border-radius: 999px 0 0 999px;
+      transform: translate(-50%,-50%); filter: drop-shadow(0 0 8px rgba(95,245,255,0.72));
+    }
+    .looi-sip-dot {
+      position: absolute; z-index: 10; left: 54.2%; top: 60.6%;
+      width: clamp(6px,0.7vw,11px); aspect-ratio: 1; border-radius: 50%;
+      background: #62eef3; opacity: 0; box-shadow: 0 0 8px rgba(95,245,255,0.8); pointer-events: none;
+    }
+
+    /* ── QUESTION MARK ── */
+    .looi-question-mark {
+      position: absolute; z-index: 5; left: 61%; top: 32%;
+      width: clamp(70px,7.5vw,120px); height: clamp(96px,10vw,160px);
+      opacity: 0; transform: translate(-50%,-50%) translateY(18px) rotate(-12deg) scale(0.55);
+      pointer-events: none; filter: drop-shadow(0 0 10px rgba(139,120,255,0.85));
+    }
+    .looi-question-mark svg { width: 100%; height: 100%; overflow: visible; }
+    .looi-question-mark__stroke { fill: none; stroke: #8b78ff; stroke-width: 18; stroke-linecap: round; stroke-linejoin: round; }
+    .looi-question-mark__highlight { fill: none; stroke: #b7aaff; stroke-width: 8; stroke-linecap: round; stroke-linejoin: round; opacity: 0.55; }
+    .looi-question-mark__dot { fill: #8b78ff; filter: drop-shadow(0 0 8px rgba(139,120,255,0.9)); }
+    .looi-thought-dot {
+      position: absolute; z-index: 5;
+      width: clamp(8px,0.9vw,14px); aspect-ratio: 1; border-radius: 50%;
+      background: #b7aaff; opacity: 0; box-shadow: 0 0 8px rgba(139,120,255,0.75); pointer-events: none;
+    }
+    .looi-thought-dot--one { left: 57.5%; top: 39%; }
+    .looi-thought-dot--two { left: 59.2%; top: 36.5%; }
+
+    /* ── ANGRY SPARK ── */
+    .looi-angry-spark {
+      position: absolute; z-index: 5; right: 25%; top: 24%;
+      width: clamp(76px,7.8vw,126px); height: clamp(76px,7.8vw,126px);
+      opacity: 0; transform: translate(-50%,-50%) rotate(14deg) scale(0.45);
+      pointer-events: none; filter: drop-shadow(0 0 10px rgba(139,120,255,0.9));
+    }
+    .looi-angry-spark svg { width: 100%; height: 100%; overflow: visible; }
+    .looi-angry-spark__main { fill: none; stroke: #8b78ff; stroke-width: 11; stroke-linecap: round; stroke-linejoin: round; }
+    .looi-angry-spark__highlight { fill: none; stroke: #c7bfff; stroke-width: 5; stroke-linecap: round; opacity: 0.7; }
+
+    /* ── LOVING HEARTS ── */
+    .looi-loving-hearts {
+      position: absolute; z-index: 5; right: 23%; top: 22%;
+      width: clamp(90px,9vw,150px); height: clamp(95px,9.5vw,158px); pointer-events: none;
+    }
+    .looi-loving-heart {
+      position: absolute;
+      width: clamp(16px,1.7vw,28px); height: clamp(16px,1.7vw,28px);
+      opacity: 0; transform: rotate(-45deg) scale(0.3);
+      background: #ff8bb5; filter: drop-shadow(0 0 8px rgba(255,139,181,0.85));
+    }
+    .looi-loving-heart::before, .looi-loving-heart::after {
+      content: ""; position: absolute; width: 100%; height: 100%;
+      border-radius: 50%; background: inherit;
+    }
+    .looi-loving-heart::before { top: -50%; left: 0; }
+    .looi-loving-heart::after  { left: 50%; top: 0; }
+    .looi-loving-heart--one { left: 20%; top: 58%; }
+    .looi-loving-heart--two { left: 54%; top: 34%; width: clamp(13px,1.35vw,22px); height: clamp(13px,1.35vw,22px); background: #ffc1d6; }
+    .looi-loving-heart--three { left: 66%; top: 68%; width: clamp(10px,1.05vw,18px); height: clamp(10px,1.05vw,18px); }
+    .looi-loving-heart--four { left: 40%; top: 12%; width: clamp(9px,1vw,16px); height: clamp(9px,1vw,16px); background: #ffc1d6; }
+
+    /* ── SHOCK EXCLAIM ── */
+    .looi-shock-exclaim {
+      position: absolute; z-index: 5; right: 24%; top: 27%;
+      width: clamp(44px,4.6vw,78px); height: clamp(92px,9.2vw,150px);
+      opacity: 0; transform: translate(-50%,-50%) rotate(12deg) scale(0.45);
+      pointer-events: none; filter: drop-shadow(0 0 9px rgba(255,214,77,0.8));
+    }
+    .looi-shock-exclaim__bar {
+      position: absolute; left: 50%; top: 0;
+      width: clamp(10px,1vw,16px); height: 68%; border-radius: 999px;
+      background: linear-gradient(180deg,#fff0a6,#ffd64d);
+      transform: translateX(-50%) rotate(9deg);
+    }
+    .looi-shock-exclaim__dot {
+      position: absolute; left: 50%; bottom: 0;
+      width: clamp(14px,1.4vw,22px); aspect-ratio: 1; border-radius: 50%;
+      background: #ffd64d; transform: translateX(-50%); box-shadow: 0 0 8px rgba(255,214,77,0.8);
+    }
+
+    /* ── TELL MIC & MOUTH ── */
+    .looi-tell-mouth {
+      position: absolute; z-index: 6; left: 50%; top: 60%;
+      width: clamp(40px,4vw,66px); height: clamp(24px,2.6vw,42px);
+      opacity: 0; transform: translate(-50%,10px) scale(0.7); pointer-events: none;
+    }
+    .looi-tell-mouth::before {
+      content: ""; position: absolute; left: 50%; top: 50%; width: 68%; height: 52%;
+      border: clamp(5px,0.55vw,7px) solid #71f7f5; border-top: 0;
+      border-left-color: transparent; border-right-color: transparent;
+      border-radius: 0 0 999px 999px; transform: translate(-50%,-50%);
+      filter: drop-shadow(0 0 8px rgba(95,245,255,0.65));
+    }
+    .looi-tell-mic {
+      position: absolute; z-index: 7;
+      width: clamp(72px,7vw,115px); height: clamp(150px,14vw,235px);
+      opacity: 0; pointer-events: none;
+    }
+    .looi-tell-mic::before {
+      content: ""; position: absolute; left: 50%; top: 0; width: 48%; height: 34%;
+      border-radius: 999px 999px 30px 30px; background: linear-gradient(145deg,#9ed8dc,#6f9dac);
+      transform: translateX(-50%); box-shadow: 0 0 8px rgba(180,255,255,0.18);
+    }
+    .looi-tell-mic::after {
+      content: ""; position: absolute; left: 50%; top: 32%; width: 14%; height: 64%;
+      border-radius: 999px; background: #86cbd1; transform: translateX(-50%);
+    }
+    .looi-tell-mic__flag {
+      position: absolute; z-index: 2; left: 50%; top: 43%; min-width: 86%;
+      padding: 7px 9px; color: white; text-align: center;
+      font: 900 clamp(10px,1.2vw,17px)/1 system-ui,sans-serif;
+      border-radius: 6px; transform: translateX(-50%) rotate(-5deg);
+    }
+    .looi-tell-mic--left { left: 31%; bottom: 8%; transform: translate(-120px,180px) rotate(24deg); }
+    .looi-tell-mic--left .looi-tell-mic__flag { background: #ff9278; }
+    .looi-tell-mic--right { right: 31%; bottom: 8%; transform: translate(120px,180px) rotate(-24deg); }
+    .looi-tell-mic--right .looi-tell-mic__flag { background: #41c7d8; }
+    .looi-tell-spark {
+      position: absolute; z-index: 8;
+      width: clamp(24px,2.6vw,44px); aspect-ratio: 1; opacity: 0; pointer-events: none;
+      filter: drop-shadow(0 0 8px rgba(255,255,210,0.85));
+    }
+    .looi-tell-spark::before, .looi-tell-spark::after {
+      content: ""; position: absolute; left: 50%; top: 50%;
+      width: 100%; height: 18%; border-radius: 999px; background: #fff6b0;
+      transform: translate(-50%,-50%) rotate(45deg);
+    }
+    .looi-tell-spark::after { transform: translate(-50%,-50%) rotate(-45deg); }
+    .looi-tell-spark--one   { left: 43%; top: 39%; }
+    .looi-tell-spark--two   { right: 39%; top: 37%; width: clamp(18px,2vw,34px); }
+    .looi-tell-spark--three { left: 51%; top: 30%; width: clamp(14px,1.6vw,28px); }
+
+    /* ── WAKE LIGHTS ── */
+    .looi-wake-side-light {
+      position: absolute; z-index: 1; top: 0;
+      width: clamp(42px,7vw,80px); height: 100%; opacity: 0; pointer-events: none;
+    }
+    .looi-wake-side-light--left {
+      left: 0; transform: translateX(-60px);
+      background: linear-gradient(90deg,rgba(35,220,255,0.78) 0%,rgba(35,220,255,0.52) 22%,rgba(35,220,255,0.24) 56%,rgba(35,220,255,0.08) 82%,transparent 100%);
+    }
+    .looi-wake-side-light--right {
+      right: 0; transform: translateX(60px);
+      background: linear-gradient(270deg,rgba(35,220,255,0.78) 0%,rgba(35,220,255,0.52) 22%,rgba(35,220,255,0.24) 56%,rgba(35,220,255,0.08) 82%,transparent 100%);
+    }
+    .looi-wake-spark {
+      position: absolute; z-index: 9;
+      width: clamp(18px,2vw,34px); aspect-ratio: 1; opacity: 0; pointer-events: none;
+      filter: drop-shadow(0 0 8px rgba(190,255,255,0.9));
+    }
+    .looi-wake-spark::before, .looi-wake-spark::after {
+      content: ""; position: absolute; left: 50%; top: 50%;
+      width: 100%; height: 18%; border-radius: 999px; background: #bdfcff;
+      transform: translate(-50%,-50%) rotate(45deg);
+    }
+    .looi-wake-spark::after { transform: translate(-50%,-50%) rotate(-45deg); }
+    .looi-wake-spark--one   { left: 23%; top: 30%; }
+    .looi-wake-spark--two   { right: 23%; top: 31%; }
+    .looi-wake-spark--three { left: 50%; top: 35%; width: clamp(12px,1.4vw,24px); }
+
+    /* ── KISS ── */
+    .looi-kiss-mouth {
+      position: absolute; z-index: 8; left: 50%; top: 61%;
+      width: clamp(48px,4.8vw,78px); height: clamp(36px,3.8vw,62px);
+      opacity: 0; transform: translate(-50%,10px) scale(0.5); pointer-events: none;
+    }
+    .looi-kiss-mouth::before {
+      content: ""; position: absolute; left: 50%; top: 50%; width: 60%; height: 58%;
+      border: clamp(6px,0.65vw,9px) solid #19d9ff; border-right: 0; border-radius: 999px 0 0 999px;
+      transform: translate(-50%,-50%); filter: drop-shadow(0 0 8px rgba(25,217,255,0.78));
+    }
+    .looi-kiss-mouth::after {
+      content: ""; position: absolute; left: 38%; top: 50%; width: 16%; height: 16%;
+      border-radius: 50%; background: #19d9ff; opacity: 0.9;
+      transform: translate(-50%,-50%); filter: drop-shadow(0 0 6px rgba(25,217,255,0.7));
+    }
+    .looi-kiss-heart {
+      position: absolute; z-index: 9; left: 50%; top: 58%;
+      width: clamp(28px,3vw,50px); height: clamp(28px,3vw,50px);
+      opacity: 0; transform: translate(-50%,-50%) rotate(-45deg) scale(0.25);
+      background: #ff8bb5; filter: drop-shadow(0 0 12px rgba(255,139,181,0.9)); pointer-events: none;
+    }
+    .looi-kiss-heart::before, .looi-kiss-heart::after {
+      content: ""; position: absolute; width: 100%; height: 100%;
+      border-radius: 50%; background: inherit;
+    }
+    .looi-kiss-heart::before { top: -50%; left: 0; }
+    .looi-kiss-heart::after  { left: 50%; top: 0; }
+
+    /* ── PHOTO PREVIEW ── */
+    .looi-photo-preview {
+      position: absolute; z-index: 7;
+      right: max(24px,8%); top: max(24px,13%);
+      width: clamp(180px,22vw,300px); aspect-ratio: 1.18/1;
+      border: 4px solid #31d8ff; border-radius: 10px;
+      opacity: 0; transform: translateX(80px) scale(0.86);
+      background: #111; box-shadow: 0 0 12px rgba(49,216,255,0.75);
+      pointer-events: none; overflow: hidden;
+      transition: opacity 220ms ease, transform 220ms ease;
+    }
+    .looi-photo-preview.is-visible { opacity: 1; transform: translateX(0) scale(1); pointer-events: auto; }
+    .looi-photo-preview__image { position: absolute; left: 8%; top: 8%; width: 84%; height: 58%; object-fit: cover; border-radius: 4px; background: #18222d; }
+    .looi-photo-preview__actions { position: absolute; left: 8%; right: 8%; bottom: 9%; display: flex; justify-content: space-between; gap: 8%; }
+    .looi-photo-preview__button { flex: 1; height: 36px; border: 0; border-radius: 999px; font: 700 14px/36px system-ui,sans-serif; text-align: center; color: white; cursor: pointer; }
+    .looi-photo-preview__button--delete { background: #d43d36; }
+    .looi-photo-preview__button--save   { background: #2c8aaa; }
+
+    /* ── FLASH SCREEN ── */
+    .looi-flash-screen {
+      position: absolute; z-index: 20; inset: 0;
+      background: white; opacity: 0; pointer-events: none;
+    }
+
+    /* ── EXPRESSION COLORS ── */
+    .looi-eyes[data-expression="happy"]                                 { --eye-core: #c7fff3; --eye-glow: #1f7dff; }
+    .looi-eyes[data-expression="curious"],
+    .looi-eyes[data-expression="attentive"]                             { --eye-core: #d5fbff; --eye-glow: #2632ff; }
+    .looi-eyes[data-expression="scared"]                                { --eye-core: #e9fcff; --eye-glow: #4a4dff; }
+    .looi-eyes[data-expression="shy"],
+    .looi-eyes[data-expression="sad"]                                   { --eye-core: #bceaff; --eye-glow: #3148c9; }
+
+    /* ── SPEAKING ── */
+    .looi-eyes.is-speaking .looi-eye__glow {
+      opacity: 1; animation: looiSpeakingGlow 520ms ease-in-out infinite alternate;
+    }
+    .looi-eyes.is-speaking .looi-eye__core {
+      box-shadow: 0 0 calc(8px + 8px * var(--expression-intensity)) rgba(189,243,255,0.32);
+    }
+
+    /* ── THINKING ── */
+    #faceCanvas.is-thinking .looi-eye__scan-line {
+      opacity: 1; animation: looiThinkingScan 1100ms ease-in-out infinite;
+    }
+    #faceCanvas.is-searching {
+      --eye-scan: rgba(255, 220, 122, 0.92);
+      --eye-glow: #7d5dff;
+    }
+    #faceCanvas.is-searching .looi-eye__scan-line {
+      opacity: 1; animation: looiThinkingScan 620ms linear infinite;
+    }
+    #faceCanvas.is-searching .looi-eye__core {
+      box-shadow: 0 0 22px rgba(255, 208, 82, 0.58);
+    }
+    @keyframes looiThinkingScan {
+      0%,100% { opacity: 0.3; transform: translate(-50%,-50%) scaleX(0.3); }
+      50%      { opacity: 1;   transform: translate(-50%,-50%) scaleX(1);   }
+    }
+
+    /* ── BLINK ── */
+    .looi-eyes.is-blinking .looi-eye { animation: looiEyeBlink var(--blink-time) ease-in-out both; }
+    .looi-eyes.is-blinking .looi-eye__core, .looi-eyes.is-blinking .looi-eye__glow { animation: looiShapeBlink var(--blink-time) ease-in-out both; }
+    .looi-eyes.is-blinking .looi-eye__glow { animation-name: looiShapeBlink,looiGlowBlink; animation-duration: var(--blink-time),var(--blink-time); animation-timing-function: ease-in-out,ease-in-out; animation-fill-mode: both,both; }
+    .looi-eyes.is-blinking .looi-eye__scan-line { animation: looiScanBlink var(--blink-time) ease-in-out both; }
+
+    /* ── SOFT CLOSE ── */
+    .looi-eyes.is-soft-closing .looi-eye { animation: looiEyeSoftClose var(--soft-close-time) ease-in-out both; }
+    .looi-eyes.is-soft-closing .looi-eye__core, .looi-eyes.is-soft-closing .looi-eye__glow { animation: looiShapeSoftClose var(--soft-close-time) ease-in-out both; }
+    .looi-eyes.is-soft-closing .looi-eye__glow { animation-name: looiShapeSoftClose,looiGlowSoftClose; animation-duration: var(--soft-close-time),var(--soft-close-time); animation-timing-function: ease-in-out,ease-in-out; animation-fill-mode: both,both; }
+
+    /* ── SLEEPING ── */
+    .looi-eyes.is-sleeping .looi-eye { animation: looiEyeSleep var(--sleep-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eyes.is-sleeping .looi-eye__core, .looi-eyes.is-sleeping .looi-eye__glow { animation: looiShapeSleep var(--sleep-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eyes.is-sleeping .looi-eye__glow { animation-name: looiShapeSleep,looiGlowSleep; animation-duration: var(--sleep-time),var(--sleep-time); animation-timing-function: cubic-bezier(0.2,0.9,0.25,1),cubic-bezier(0.2,0.9,0.25,1); animation-fill-mode: both,both; }
+    .looi-eyes.is-sleeping .looi-eye__scan-line { opacity: 0; }
+
+    /* ── PHOTO ── */
+    .looi-eye-system.is-taking-picture .looi-eyes                    { animation: looiPictureEyesMove var(--photo-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-taking-picture .looi-eye:first-child          { animation: looiPictureLeftEye var(--photo-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-taking-picture .looi-eye:last-child           { animation: looiPictureRightEye var(--photo-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-taking-picture .looi-camera-icon              { animation: looiCameraPop var(--photo-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-taking-picture .looi-flash-screen             { animation: looiPhotoFlash var(--photo-time) linear both; }
+
+    /* ── FOLLOW ── */
+    .looi-eye-system.is-follow-opening .looi-follow-shine, .looi-eye-system.is-following .looi-follow-shine { opacity: 1; }
+    .looi-eye-system.is-follow-stopping .looi-follow-shine { opacity: 0; }
+    .looi-eye-system.is-follow-opening .looi-eyes         { animation: looiFollowOpenEyes var(--follow-open-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-follow-opening .looi-follow-target { animation: looiFollowTargetOpen var(--follow-open-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-following .looi-eyes              { animation: looiFollowEyesLoop 1800ms cubic-bezier(0.45,0,0.2,1) infinite; }
+    .looi-eye-system.is-following .looi-follow-target      { animation: looiFollowTargetLoop 1800ms cubic-bezier(0.45,0,0.2,1) infinite; }
+    .looi-eye-system.is-follow-stopping .looi-eyes        { animation: looiFollowStopEyes var(--follow-stop-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-follow-stopping .looi-follow-target{ animation: looiFollowTargetStop var(--follow-stop-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+
+    /* ── EATING ── */
+    .looi-eye-system.is-taking-bite .looi-eyes        { animation: looiEatEyes var(--bite-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-taking-bite .looi-eye         { animation: looiEatEye var(--bite-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-taking-bite .looi-burger      { animation: looiBurgerBiteMove var(--bite-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-taking-bite .looi-burger__bite{ animation: looiBiteAppear var(--bite-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-taking-bite .looi-eating-mouth{ animation: looiChew var(--bite-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-taking-bite .looi-eating-mouth::before { animation: looiMouthLine var(--bite-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-taking-bite .looi-eating-mouth::after  { animation: looiMouthStem var(--bite-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-taking-bite .looi-eating-crumb--one { animation: looiCrumbOne var(--bite-time) ease-out both; }
+    .looi-eye-system.is-taking-bite .looi-eating-crumb--two { animation: looiCrumbTwo var(--bite-time) ease-out both; }
+    .looi-eye-system.is-bitten .looi-burger           { opacity: 1; transform: translate(-50%,-4px) scale(0.96); }
+    .looi-eye-system.is-bitten .looi-burger__bite     { opacity: 1; transform: scale(1); }
+    .looi-eye-system.is-bitten .looi-eating-mouth     { opacity: 1; transform: translate(-50%,2px) scale(0.9); }
+    .looi-eye-system.is-bitten .looi-eating-mouth::before { left: 44%; top: 42%; width: 58%; height: 34%; border: clamp(5px,0.6vw,8px) solid var(--eye-core); border-top: 0; border-left-color: transparent; border-right-color: transparent; border-radius: 0 0 999px 999px; transform: translate(-50%,-50%) rotate(8deg); }
+    .looi-eye-system.is-bitten .looi-eating-mouth::after { opacity: 1; left: 66%; top: 28%; height: 54%; transform: rotate(8deg) scaleY(1); }
+    .looi-eye-system.is-finishing-burger .looi-eyes       { animation: looiEatEyes var(--finish-burger-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-finishing-burger .looi-eye        { animation: looiEatEye var(--finish-burger-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-finishing-burger .looi-burger     { animation: looiBurgerFinishMove var(--finish-burger-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-finishing-burger .looi-burger__bite { opacity: 1; transform: scale(1); }
+    .looi-eye-system.is-finishing-burger .looi-eating-mouth { animation: looiFinishChew var(--finish-burger-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-finishing-burger .looi-eating-mouth::before { animation: looiFinishMouthLine var(--finish-burger-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-finishing-burger .looi-eating-mouth::after  { animation: looiFinishMouthStem var(--finish-burger-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+
+    /* ── DRINKING ── */
+    .looi-eye-system.is-drink-opening .looi-eyes        { animation: looiDrinkEyesIn var(--drink-open-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-drink-opening .looi-eye         { animation: looiDrinkEyeIn var(--drink-open-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-drink-opening .looi-eye__core,
+    .looi-eye-system.is-drink-opening .looi-eye__glow   { animation: looiDrinkEyeShapeIn var(--drink-open-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-drink-opening .looi-drink-can   { animation: looiDrinkCanIn var(--drink-open-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-drink-opening .looi-drink-straw { animation: looiDrinkStrawIn var(--drink-open-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-drink-opening .looi-drink-mouth { animation: looiDrinkMouthIn var(--drink-open-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-drinking .looi-eyes { transform: translateX(0) scaleY(0.96); }
+    .looi-eye-system.is-drinking .looi-eye  { width: clamp(126px,23vw,265px); height: clamp(70px,9.4vw,136px); transform: translateY(-70px); }
+    .looi-eye-system.is-drinking .looi-eye__core, .looi-eye-system.is-drinking .looi-eye__glow { border-radius: 999px 999px 30px 30px / 100% 100% 24px 24px; }
+    .looi-eye-system.is-drinking .looi-drink-can   { opacity: 1; transform: translate(-50%,-18px) rotate(-13deg) scale(1); }
+    .looi-eye-system.is-drinking .looi-drink-straw { opacity: 1; transform: translate(-50%,-18px) rotate(-13deg); }
+    .looi-eye-system.is-drinking .looi-drink-mouth { opacity: 1; transform: translate(-50%,0) scale(1); }
+    .looi-eye-system.is-drinking .looi-sip-dot--one   { animation: looiSipDotOne   1600ms ease-out infinite; }
+    .looi-eye-system.is-drinking .looi-sip-dot--two   { animation: looiSipDotTwo   1600ms ease-out infinite; }
+    .looi-eye-system.is-drinking .looi-sip-dot--three { animation: looiSipDotThree 1600ms ease-out infinite; }
+    .looi-eye-system.is-drinking .looi-sip-dot--four  { animation: looiSipDotFour  1600ms ease-out infinite; }
+    .looi-eye-system.is-finish-drinking .looi-eyes        { animation: looiDrinkEyesOut var(--finish-drink-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-finish-drinking .looi-eye         { animation: looiDrinkEyeOut var(--finish-drink-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-finish-drinking .looi-eye__core,
+    .looi-eye-system.is-finish-drinking .looi-eye__glow   { animation: looiDrinkEyeShapeOut var(--finish-drink-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-finish-drinking .looi-drink-can   { animation: looiDrinkCanOut var(--finish-drink-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-finish-drinking .looi-drink-straw { animation: looiDrinkStrawOut var(--finish-drink-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-finish-drinking .looi-drink-mouth { animation: looiDrinkMouthOut var(--finish-drink-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+
+    /* ── QUESTIONING ── */
+    .looi-eye-system.is-questioning .looi-eyes             { animation: looiCuriousEyes var(--question-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-questioning .looi-eye:first-child  { animation: looiLeftCuriousEye var(--question-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-questioning .looi-eye:last-child   { animation: looiRightCuriousEye var(--question-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-questioning .looi-question-mark    { animation: looiQuestionPop var(--question-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-questioning .looi-thought-dot--one { animation: looiQuestionDotOne var(--question-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-questioning .looi-thought-dot--two { animation: looiQuestionDotTwo var(--question-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+
+    /* ── ANGRY ── */
+    .looi-eye-system.is-angry .looi-eyes                         { animation: looiAngryShake var(--angry-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-angry .looi-eye:first-child              { animation: looiLeftAngryEye var(--angry-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-angry .looi-eye:last-child               { animation: looiRightAngryEye var(--angry-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-angry .looi-eye:first-child .looi-eye__lid { animation: looiLeftAngryLid var(--angry-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-angry .looi-eye:last-child  .looi-eye__lid { animation: looiRightAngryLid var(--angry-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-angry .looi-angry-spark                  { animation: looiAngrySparkPop var(--angry-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+
+    /* ── LOVING ── */
+    .looi-eye-system.is-loving .looi-eyes              { animation: looiLoveEyesMove var(--love-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-loving .looi-eye               { animation: looiLoveEyeBounce var(--love-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-loving .looi-eye__core         { background: #18d6d0; }
+    .looi-eye-system.is-loving .looi-eye__glow         { background: #1834ff; }
+    .looi-eye-system.is-loving .looi-eye__love-lid     { animation: looiLoveLid var(--love-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-loving .looi-loving-heart--one   { animation: looiHeartFloatOne   var(--love-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-loving .looi-loving-heart--two   { animation: looiHeartFloatTwo   var(--love-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-loving .looi-loving-heart--three { animation: looiHeartFloatThree var(--love-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-loving .looi-loving-heart--four  { animation: looiHeartFloatFour  var(--love-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+
+    /* ── SHOCKED ── */
+    .looi-eye-system.is-shocked .looi-eyes                { animation: looiShockEyesMove var(--shock-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-shocked .looi-eye                 { animation: looiShockEyePulse var(--shock-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-shocked .looi-shock-exclaim       { animation: looiExclaimPop var(--shock-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-shocked .looi-shock-exclaim__bar  { animation: looiExclaimBarWiggle var(--shock-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-shocked .looi-shock-exclaim__dot  { animation: looiExclaimDotPop var(--shock-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+
+    /* ── TELL / NEWS ── */
+    .looi-eye-system.is-tell-opening .looi-eyes             { animation: looiTellEyesOpen var(--tell-open-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-tell-opening .looi-eye              { animation: looiTellEyeOpen var(--tell-open-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-tell-opening .looi-tell-mouth       { animation: looiTellMouthOpen var(--tell-open-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-tell-opening .looi-tell-mic--left   { animation: looiTellLeftMicOpen var(--tell-open-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-tell-opening .looi-tell-mic--right  { animation: looiTellRightMicOpen var(--tell-open-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-tell-opening .looi-tell-spark--one  { animation: looiTellSparkOne var(--tell-open-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-tell-opening .looi-tell-spark--two  { animation: looiTellSparkTwo var(--tell-open-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-tell-opening .looi-tell-spark--three{ animation: looiTellSparkThree var(--tell-open-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-telling .looi-eyes         { transform: translateX(0) scaleY(1); }
+    .looi-eye-system.is-telling .looi-eye          { transform: translateY(-14px) scale(0.96); }
+    .looi-eye-system.is-telling .looi-tell-mouth   { animation: looiTellMouthLoop var(--tell-loop-time) cubic-bezier(0.2,0.9,0.25,1) infinite; }
+    .looi-eye-system.is-telling .looi-tell-mic--left  { opacity: 1; transform: translate(0,0) rotate(24deg); }
+    .looi-eye-system.is-telling .looi-tell-mic--right { opacity: 1; transform: translate(0,0) rotate(-24deg); }
+    .looi-eye-system.is-telling .looi-tell-spark--one  { animation: looiTellSparkOne var(--tell-loop-time) cubic-bezier(0.2,0.9,0.25,1) infinite; }
+    .looi-eye-system.is-telling .looi-tell-spark--two  { animation: looiTellSparkTwo var(--tell-loop-time) cubic-bezier(0.2,0.9,0.25,1) infinite; }
+    .looi-eye-system.is-telling .looi-tell-spark--three{ animation: looiTellSparkThree var(--tell-loop-time) cubic-bezier(0.2,0.9,0.25,1) infinite; }
+    .looi-eye-system.is-tell-finishing .looi-eyes           { animation: looiTellEyesFinish var(--tell-finish-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-tell-finishing .looi-eye            { animation: looiTellEyeFinish var(--tell-finish-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-tell-finishing .looi-tell-mouth     { animation: looiTellMouthFinish var(--tell-finish-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-tell-finishing .looi-tell-mic--left { animation: looiTellLeftMicFinish var(--tell-finish-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-tell-finishing .looi-tell-mic--right{ animation: looiTellRightMicFinish var(--tell-finish-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+
+    /* ── KISS ── */
+    .looi-eye-system.is-kissing .looi-eyes          { animation: looiKissEyesMove var(--kiss-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-kissing .looi-eye           { animation: looiKissEye var(--kiss-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-kissing .looi-eye__love-lid { animation: looiKissLid var(--kiss-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-kissing .looi-kiss-mouth    { animation: looiKissMouth var(--kiss-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-kissing .looi-kiss-heart    { animation: looiBigKissHeart var(--kiss-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+
+    /* ── WAKE ── */
+    .looi-eye-system.is-wake-activating .looi-wake-side-light--left  { animation: looiWakeLeftLight var(--wake-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-wake-activating .looi-wake-side-light--right { animation: looiWakeRightLight var(--wake-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-wake-activating .looi-wake-spark--one   { animation: looiWakeSparkOne   var(--wake-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-wake-activating .looi-wake-spark--two   { animation: looiWakeSparkTwo   var(--wake-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+    .looi-eye-system.is-wake-activating .looi-wake-spark--three { animation: looiWakeSparkThree var(--wake-time) cubic-bezier(0.2,0.9,0.25,1) both; }
+
+    /* ── RESPONSIVE ── */
+    @media (max-width: 700px) {
+      .looi-eyes { gap: clamp(42px,12vw,90px); }
+      .looi-eye  { width: clamp(108px,34vw,180px); height: clamp(88px,28vw,150px); }
+    }
+
+    /* ─────────────── KEYFRAMES ─────────────── */
+    @keyframes looiEyeBlink {
+      0%,100% { width: clamp(126px,25vw,258px); height: clamp(104px,20vw,214px); transform: translateY(-10px); }
+      42%,58% { width: clamp(150px,32vw,305px); height: clamp(18px,3.4vw,34px); transform: translateY(-10px); }
+      72%     { width: clamp(138px,29vw,282px); height: clamp(44px,7vw,72px);   transform: translateY(-10px); }
+    }
+    @keyframes looiEyeSoftClose {
+      0%,100% { width: clamp(126px,25vw,258px); height: clamp(104px,20vw,214px); transform: translateY(-10px); }
+      45%,60% { width: clamp(138px,27vw,274px); height: clamp(58px,10vw,110px);  transform: translateY(-10px); }
+    }
+    @keyframes looiEyeSleep {
+      0%   { width: clamp(126px,25vw,258px); height: clamp(104px,20vw,214px); transform: translateY(-10px); }
+      45%  { width: clamp(138px,27vw,274px); height: clamp(58px,10vw,110px);  transform: translateY(-4px); }
+      100% { width: clamp(148px,30vw,292px); height: clamp(24px,4vw,44px);    transform: translateY(-2px); }
+    }
+    @keyframes looiShapeBlink { 0%,100% { border-radius: 50%; } 42%,72% { border-radius: 999px; } }
+    @keyframes looiShapeSoftClose { 0%,100% { border-radius: 50%; } 45%,60% { border-radius: 999px; } }
+    @keyframes looiShapeSleep { 0% { border-radius: 50%; } 45% { border-radius: 4px 4px 999px 999px / 4px 4px 100% 100%; } 100% { border-radius: 8px 8px 999px 999px / 8px 8px 100% 100%; } }
+    @keyframes looiGlowBlink {
+      0%,100% { transform: translate(calc(var(--glow-dir)*18px),24px); filter: blur(5px); opacity: 0.94; }
+      42%,58% { transform: translate(calc(var(--glow-dir)*16px),12px); filter: blur(5px); opacity: 0.88; }
+      72%     { transform: translate(calc(var(--glow-dir)*17px),16px); filter: blur(5px); opacity: 0.9; }
+    }
+    @keyframes looiGlowSoftClose {
+      0%,100% { transform: translate(calc(var(--glow-dir)*18px),24px); filter: blur(5px); opacity: 0.94; }
+      45%,60% { transform: translate(calc(var(--glow-dir)*17px),20px); filter: blur(5px); opacity: 0.9; }
+    }
+    @keyframes looiGlowSleep {
+      0%   { transform: translate(calc(var(--glow-dir)*18px),24px); filter: blur(5px); opacity: 0.94; }
+      45%  { transform: translate(calc(var(--glow-dir)*17px),18px); filter: blur(5px); opacity: 0.9; }
+      100% { transform: translate(calc(var(--glow-dir)*14px),12px); filter: blur(5px); opacity: 0.9; }
+    }
+    @keyframes looiScanBlink {
+      0%,100% { opacity: 0; transform: translate(-50%,-50%) scaleX(0.2); }
+      42%,58% { opacity: 1; transform: translate(-50%,-50%) scaleX(1); }
+      72%     { opacity: 0.55; transform: translate(-50%,-50%) scaleX(0.8); }
+    }
+    @keyframes looiSpeakingGlow {
+      from { filter: blur(5px); transform: translate(calc(var(--glow-dir)*18px),24px) scale(1); }
+      to   { filter: blur(7px); transform: translate(calc(var(--glow-dir)*18px),24px) scale(1.035); }
+    }
+    @keyframes looiWakeLeftLight  { 0%,12%{opacity:0;transform:translateX(-60px)} 34%{opacity:1;transform:translateX(0)} 72%{opacity:0.9;transform:translateX(0)} 100%{opacity:0;transform:translateX(-60px)} }
+    @keyframes looiWakeRightLight { 0%,12%{opacity:0;transform:translateX(60px)}  34%{opacity:1;transform:translateX(0)} 72%{opacity:0.9;transform:translateX(0)} 100%{opacity:0;transform:translateX(60px)} }
+    @keyframes looiWakeSparkOne   { 0%,34%,62%,100%{opacity:0;transform:scale(0.3) rotate(0)} 44%{opacity:1;transform:scale(1.15) rotate(18deg)} 52%{opacity:0.75;transform:scale(0.85) rotate(-12deg)} }
+    @keyframes looiWakeSparkTwo   { 0%,42%,72%,100%{opacity:0;transform:scale(0.3) rotate(0)} 52%{opacity:1;transform:scale(1.1)  rotate(-16deg)} 62%{opacity:0.7;transform:scale(0.85) rotate(12deg)} }
+    @keyframes looiWakeSparkThree { 0%,26%,48%,100%{opacity:0;transform:scale(0.3) rotate(0)} 34%{opacity:0.9;transform:scale(1) rotate(14deg)} }
+    @keyframes looiFollowOpenEyes {
+      0%   { transform: translateX(var(--look-x)) scaleY(var(--look-scale-y)); }
+      35%  { transform: translateX(0) scaleY(0.9); }
+      70%  { transform: translateX(-22px) scaleY(1.04); }
+      100% { transform: translateX(-52px) scaleY(0.96); }
+    }
+    @keyframes looiFollowTargetOpen {
+      0%   { opacity:0; transform: translate(-50%,130%) rotate(-38deg) scale(0.9); }
+      65%  { opacity:1; transform: translate(-50%,8%) rotate(-38deg) scale(1.04); }
+      100% { opacity:1; transform: translate(calc(-50% - 70px),0) rotate(-46deg) scale(1); }
+    }
+    @keyframes looiFollowEyesLoop {
+      0%,100%{ transform: translateX(-52px) scaleY(0.96); }
+      25%    { transform: translateX(-18px) scaleY(1); }
+      50%    { transform: translateX(52px)  scaleY(0.96); }
+      75%    { transform: translateX(18px)  scaleY(1); }
+    }
+    @keyframes looiFollowTargetLoop {
+      0%,100%{ opacity:1; transform: translate(calc(-50% - 70px),0) rotate(-46deg) scale(1); }
+      25%    { opacity:1; transform: translate(calc(-50% - 24px),-8%) rotate(-34deg) scale(0.98); }
+      50%    { opacity:1; transform: translate(calc(-50% + 70px),0) rotate(-30deg) scale(1); }
+      75%    { opacity:1; transform: translate(calc(-50% + 24px),-8%) rotate(-42deg) scale(0.98); }
+    }
+    @keyframes looiFollowStopEyes  { 0%{transform:translateX(52px) scaleY(0.96)} 45%{transform:translateX(0) scaleY(0.88)} 100%{transform:translateX(var(--look-x)) scaleY(var(--look-scale-y))} }
+    @keyframes looiFollowTargetStop { 0%{opacity:1;transform:translate(calc(-50% + 70px),0) rotate(-30deg) scale(1)} 40%{opacity:1;transform:translate(-50%,-4%) rotate(-38deg) scale(1.03)} 100%{opacity:0;transform:translate(-50%,130%) rotate(-38deg) scale(0.9)} }
+    @keyframes looiEatEyes { 0%,100%{transform:translateX(0) scaleY(1)} 16%,86%{transform:translateX(0) scaleY(0.94)} 30%,76%{transform:translateX(0) scaleY(1)} }
+    @keyframes looiEatEye  { 0%,100%{width:clamp(126px,25vw,258px);height:clamp(104px,20vw,214px);transform:translateY(-10px) scale(1)} 20%,74%{width:clamp(116px,21vw,232px);height:clamp(106px,19vw,214px);transform:translateY(-22px) scale(0.96)} 42%,56%{width:clamp(124px,23vw,248px);height:clamp(102px,18vw,204px);transform:translateY(-16px) scale(1.02)} }
+    @keyframes looiBurgerBiteMove { 0%,12%{opacity:0;transform:translate(-50%,120%) scale(0.86)} 24%{opacity:1;transform:translate(-50%,0) scale(1)} 36%{opacity:1;transform:translate(-50%,-6px) scale(1.02)} 46%{opacity:1;transform:translate(-50%,-12px) scale(1.04)} 56%,100%{opacity:1;transform:translate(-50%,-4px) scale(0.96)} }
+    @keyframes looiBurgerFinishMove { 0%{opacity:1;transform:translate(-50%,-4px) scale(0.96)} 24%{opacity:1;transform:translate(-50%,-10px) scale(0.78)} 48%{opacity:1;transform:translate(-50%,-8px) scale(0.55)} 72%{opacity:1;transform:translate(-50%,-14px) scale(0.28)} 100%{opacity:0;transform:translate(-50%,-30px) scale(0.04)} }
+    @keyframes looiBiteAppear { 0%,43%{opacity:0;transform:scale(0.2)} 49%,100%{opacity:1;transform:scale(1)} }
+    @keyframes looiChew { 0%,18%{opacity:0;transform:translate(-50%,115px) scale(0.72)} 24%,40%{opacity:1;transform:translate(-50%,6px) scale(1)} 48%,56%{opacity:1;transform:translate(-50%,14px) scale(1)} 64%,100%{opacity:1;transform:translate(-50%,2px) scale(0.9)} }
+    @keyframes looiFinishChew { 0%,12%{opacity:1;transform:translate(-50%,2px) scale(0.9)} 24%,36%{opacity:1;transform:translate(-50%,12px) scale(1,0.48)} 46%,58%{opacity:1;transform:translate(-50%,2px) scale(0.9,0.58)} 68%,82%{opacity:1;transform:translate(-50%,12px) scale(0.92,0.42)} 100%{opacity:0;transform:translate(-50%,-4px) scale(0.7)} }
+    @keyframes looiMouthLine { 0%,42%{left:50%;top:54%;width:72%;height:72%;border:clamp(5px,0.6vw,8px) solid var(--eye-core);border-radius:50%;transform:translate(-50%,-50%)} 48%,56%{left:50%;top:58%;width:72%;height:16%;border:clamp(5px,0.6vw,8px) solid var(--eye-core);border-top:0;border-left-color:transparent;border-right-color:transparent;border-radius:0 0 999px 999px;transform:translate(-50%,-50%)} 64%,100%{left:44%;top:42%;width:58%;height:34%;border:clamp(5px,0.6vw,8px) solid var(--eye-core);border-top:0;border-left-color:transparent;border-right-color:transparent;border-radius:0 0 999px 999px;transform:translate(-50%,-50%) rotate(8deg)} }
+    @keyframes looiMouthStem { 0%,44%{opacity:0;left:66%;top:38%;height:44%;transform:rotate(12deg) scaleY(0.4)} 58%,100%{opacity:1;left:66%;top:28%;height:54%;transform:rotate(8deg) scaleY(1)} }
+    @keyframes looiFinishMouthLine { 0%,42%{left:44%;top:42%;width:58%;height:34%;border:clamp(5px,0.6vw,8px) solid var(--eye-core);border-top:0;border-left-color:transparent;border-right-color:transparent;border-radius:0 0 999px 999px;transform:translate(-50%,-50%) rotate(8deg)} 48%,76%{left:50%;top:58%;width:72%;height:16%;border:clamp(5px,0.6vw,8px) solid var(--eye-core);border-top:0;border-left-color:transparent;border-right-color:transparent;border-radius:0 0 999px 999px;transform:translate(-50%,-50%)} 100%{left:44%;top:42%;width:58%;height:34%;border:clamp(5px,0.6vw,8px) solid var(--eye-core);border-top:0;border-left-color:transparent;border-right-color:transparent;border-radius:0 0 999px 999px;transform:translate(-50%,-50%) rotate(8deg)} }
+    @keyframes looiFinishMouthStem { 0%,42%{opacity:1;left:66%;top:28%;height:54%;transform:rotate(8deg) scaleY(1)} 48%,76%,100%{opacity:0;left:66%;top:38%;height:44%;transform:rotate(12deg) scaleY(0.4)} }
+    @keyframes looiCrumbOne { 0%,46%{opacity:0;transform:translate(-20px,-10px) scale(0.4)} 54%{opacity:1;transform:translate(-48px,-28px) scale(1)} 100%{opacity:0;transform:translate(-78px,10px) scale(0.45)} }
+    @keyframes looiCrumbTwo { 0%,48%{opacity:0;transform:translate(18px,-8px) scale(0.4)} 56%{opacity:1;transform:translate(52px,-24px) scale(1)} 100%{opacity:0;transform:translate(82px,14px) scale(0.45)} }
+    @keyframes looiDrinkEyesIn    { 0%{transform:translateX(var(--look-x)) scaleY(var(--look-scale-y))} 100%{transform:translateX(0) scaleY(0.96)} }
+    @keyframes looiDrinkEyeIn     { 0%{width:clamp(126px,25vw,258px);height:clamp(104px,20vw,214px);transform:translateY(-10px)} 100%{width:clamp(126px,23vw,265px);height:clamp(70px,9.4vw,136px);transform:translateY(-70px)} }
+    @keyframes looiDrinkEyeShapeIn  { 0%{border-radius:50%} 100%{border-radius:999px 999px 30px 30px / 100% 100% 24px 24px} }
+    @keyframes looiDrinkCanIn     { 0%,15%{opacity:0;transform:translate(-50%,130%) rotate(-13deg) scale(0.92)} 100%{opacity:1;transform:translate(-50%,-18px) rotate(-13deg) scale(1)} }
+    @keyframes looiDrinkStrawIn   { 0%,25%{opacity:0;transform:translate(-50%,100px) rotate(-13deg)} 100%{opacity:1;transform:translate(-50%,-18px) rotate(-13deg)} }
+    @keyframes looiDrinkMouthIn   { 0%,35%{opacity:0;transform:translate(-50%,22px) scale(0.7)} 100%{opacity:1;transform:translate(-50%,0) scale(1)} }
+    @keyframes looiDrinkEyesOut   { 0%{transform:translateX(0) scaleY(0.96)} 100%{transform:translateX(0) scaleY(1)} }
+    @keyframes looiDrinkEyeOut    { 0%{width:clamp(126px,23vw,265px);height:clamp(70px,9.4vw,136px);transform:translateY(-70px)} 100%{width:clamp(126px,25vw,258px);height:clamp(104px,20vw,214px);transform:translateY(-10px)} }
+    @keyframes looiDrinkEyeShapeOut { 0%{border-radius:999px 999px 30px 30px / 100% 100% 24px 24px} 100%{border-radius:50%} }
+    @keyframes looiDrinkCanOut    { 0%{opacity:1;transform:translate(-50%,-18px) rotate(-13deg) scale(1)} 100%{opacity:0;transform:translate(-50%,115%) rotate(-13deg) scale(0.94)} }
+    @keyframes looiDrinkStrawOut  { 0%{opacity:1;transform:translate(-50%,-18px) rotate(-13deg)} 100%{opacity:0;transform:translate(-50%,86px) rotate(-13deg)} }
+    @keyframes looiDrinkMouthOut  { 0%{opacity:1;transform:translate(-50%,0) scale(1)} 100%{opacity:0;transform:translate(-50%,22px) scale(0.7)} }
+    @keyframes looiSipDotOne   { 0%,40%{opacity:0;transform:translate(-22px,10px) scale(0.4)} 50%{opacity:1;transform:translate(-42px,-10px) scale(1)} 72%,100%{opacity:0;transform:translate(-60px,12px) scale(0.45)} }
+    @keyframes looiSipDotTwo   { 0%,52%{opacity:0;transform:translate(18px,8px) scale(0.4)} 62%{opacity:1;transform:translate(34px,-8px) scale(0.9)} 80%,100%{opacity:0;transform:translate(50px,14px) scale(0.45)} }
+    @keyframes looiSipDotThree { 0%,36%{opacity:0;transform:translate(-6px,4px) scale(0.35)} 46%{opacity:0.95;transform:translate(-22px,-18px) scale(0.75)} 66%,100%{opacity:0;transform:translate(-34px,-4px) scale(0.35)} }
+    @keyframes looiSipDotFour  { 0%,58%{opacity:0;transform:translate(2px,6px) scale(0.3)} 68%{opacity:0.9;transform:translate(20px,-18px) scale(0.65)} 84%,100%{opacity:0;transform:translate(34px,-2px) scale(0.3)} }
+    @keyframes looiCuriousEyes { 0%,100%{transform:translateX(0) scaleY(1)} 24%{transform:translateX(16px) scaleY(0.96)} 54%{transform:translateX(38px) scaleY(1.02)} 78%{transform:translateX(28px) scaleY(0.98)} }
+    @keyframes looiLeftCuriousEye  { 0%,100%{transform:translateY(-10px) scale(1)} 28%,74%{transform:translateY(-6px) scale(0.94)} }
+    @keyframes looiRightCuriousEye { 0%,100%{transform:translateY(-10px) scale(1)} 28%{transform:translateY(-14px) scale(1.03)} 54%,74%{transform:translateY(-20px) scale(1.08)} }
+    @keyframes looiQuestionPop     { 0%,16%{opacity:0;transform:translate(-50%,-50%) translateY(22px) rotate(-22deg) scale(0.35)} 34%{opacity:1;transform:translate(-50%,-50%) translateY(-4px) rotate(10deg) scale(1.08)} 50%{opacity:1;transform:translate(-50%,-50%) translateY(0) rotate(-8deg) scale(1)} 70%{opacity:1;transform:translate(-50%,-50%) translateY(-8px) rotate(6deg) scale(1.03)} 88%,100%{opacity:0;transform:translate(-50%,-50%) translateY(-18px) rotate(14deg) scale(0.75)} }
+    @keyframes looiQuestionDotOne  { 0%,20%,90%,100%{opacity:0;transform:translateY(14px) scale(0.4)} 36%,74%{opacity:0.8;transform:translateY(0) scale(1)} }
+    @keyframes looiQuestionDotTwo  { 0%,26%,90%,100%{opacity:0;transform:translateY(12px) scale(0.4)} 44%,76%{opacity:0.75;transform:translateY(0) scale(0.8)} }
+    @keyframes looiAngryShake      { 0%,100%{transform:translateX(0)} 18%{transform:translateX(-8px)} 26%{transform:translateX(8px)} 34%{transform:translateX(-5px)} 44%,78%{transform:translateX(0)} }
+    @keyframes looiLeftAngryEye    { 0%,100%{width:clamp(126px,25vw,258px);height:clamp(104px,20vw,214px);transform:translateY(-10px) rotate(0deg)} 28%,82%{width:clamp(132px,19vw,220px);height:clamp(96px,14.5vw,180px);transform:translateY(-4px) rotate(0deg)} }
+    @keyframes looiRightAngryEye   { 0%,100%{width:clamp(126px,25vw,258px);height:clamp(104px,20vw,214px);transform:translateY(-10px) rotate(0deg)} 28%,82%{width:clamp(132px,19vw,220px);height:clamp(96px,14.5vw,180px);transform:translateY(-4px) rotate(0deg)} }
+    @keyframes looiLeftAngryLid    { 0%,100%{transform:translateY(-120%) rotate(0deg)} 28%,82%{transform:translateY(-22%) translateX(2%) rotate(15deg)} }
+    @keyframes looiRightAngryLid   { 0%,100%{transform:translateY(-120%) rotate(0deg)} 28%,82%{transform:translateY(-22%) translateX(-2%) rotate(-15deg)} }
+    @keyframes looiAngrySparkPop   { 0%,18%{opacity:0;transform:translate(-50%,-50%) rotate(0deg) scale(0.3)} 32%{opacity:1;transform:translate(-50%,-50%) rotate(16deg) scale(1.22)} 46%{opacity:1;transform:translate(-50%,-50%) rotate(-8deg) scale(1)} 62%,78%{opacity:1;transform:translate(-50%,-50%) rotate(12deg) scale(1.08)} 100%{opacity:0;transform:translate(-50%,-50%) translateY(-14px) rotate(22deg) scale(0.78)} }
+    @keyframes looiLoveEyesMove    { 0%,100%{transform:translateX(0) scaleY(1)} 18%{transform:translateX(10px) scaleY(0.94)} 36%,78%{transform:translateX(18px) scaleY(1)} }
+    @keyframes looiLoveEyeBounce   { 0%,100%{width:clamp(126px,25vw,258px);height:clamp(104px,20vw,214px);transform:translateY(-10px) scale(1)} 22%,82%{width:clamp(136px,19vw,220px);height:clamp(92px,13vw,160px);transform:translateY(-4px) scale(0.96)} 42%,58%{transform:translateY(-10px) scale(1.03)} }
+    @keyframes looiLoveLid         { 0%,100%{transform:translateY(125%)} 22%,82%{transform:translateY(18%)} }
+    @keyframes looiHeartFloatOne   { 0%,18%{opacity:0;transform:translateY(16px) rotate(-45deg) scale(0.3)} 34%{opacity:1;transform:translateY(0) rotate(-45deg) scale(1)} 72%{opacity:1;transform:translateY(-18px) rotate(-45deg) scale(0.95)} 100%{opacity:0;transform:translateY(-44px) rotate(-45deg) scale(0.55)} }
+    @keyframes looiHeartFloatTwo   { 0%,28%{opacity:0;transform:translateY(14px) rotate(-45deg) scale(0.25)} 44%{opacity:1;transform:translateY(0) rotate(-45deg) scale(1)} 80%{opacity:0.85;transform:translateY(-24px) rotate(-45deg) scale(0.85)} 100%{opacity:0;transform:translateY(-48px) rotate(-45deg) scale(0.45)} }
+    @keyframes looiHeartFloatThree { 0%,36%{opacity:0;transform:translateY(10px) rotate(-45deg) scale(0.25)} 52%{opacity:0.9;transform:translateY(0) rotate(-45deg) scale(1)} 100%{opacity:0;transform:translateY(-38px) rotate(-45deg) scale(0.4)} }
+    @keyframes looiHeartFloatFour  { 0%,46%{opacity:0;transform:translateY(10px) rotate(-45deg) scale(0.2)} 60%{opacity:0.8;transform:translateY(0) rotate(-45deg) scale(1)} 100%{opacity:0;transform:translateY(-30px) rotate(-45deg) scale(0.35)} }
+    @keyframes looiShockEyesMove   { 0%,100%{transform:translateX(0) scaleY(1)} 14%{transform:translateX(-10px) scaleY(1.05)} 24%{transform:translateX(10px) scaleY(0.96)} 36%,78%{transform:translateX(0) scaleY(1)} }
+    @keyframes looiShockEyePulse   { 0%,100%{width:clamp(126px,25vw,258px);height:clamp(104px,20vw,214px);transform:translateY(-10px) scale(1)} 18%{width:clamp(142px,20vw,230px);height:clamp(118px,17vw,205px);transform:translateY(-16px) scale(1.08)} 34%,76%{width:clamp(126px,25vw,258px);height:clamp(104px,20vw,214px);transform:translateY(-10px) scale(1)} }
+    @keyframes looiExclaimPop      { 0%,16%{opacity:0;transform:translate(-50%,-50%) translateY(16px) rotate(18deg) scale(0.25)} 28%{opacity:1;transform:translate(-50%,-50%) translateY(-6px) rotate(-10deg) scale(1.18)} 42%{opacity:1;transform:translate(-50%,-50%) translateY(0) rotate(12deg) scale(0.96)} 62%,80%{opacity:1;transform:translate(-50%,-50%) translateY(-4px) rotate(8deg) scale(1)} 100%{opacity:0;transform:translate(-50%,-50%) translateY(-18px) rotate(20deg) scale(0.72)} }
+    @keyframes looiExclaimBarWiggle{ 0%,100%{transform:translateX(-50%) rotate(9deg)} 28%{transform:translateX(-50%) rotate(-8deg)} 42%{transform:translateX(-50%) rotate(14deg)} 62%{transform:translateX(-50%) rotate(5deg)} }
+    @keyframes looiExclaimDotPop   { 0%,20%{transform:translateX(-50%) scale(0.4)} 30%{transform:translateX(-50%) scale(1.25)} 42%,80%{transform:translateX(-50%) scale(1)} 100%{transform:translateX(-50%) scale(0.55)} }
+    @keyframes looiTellEyesOpen    { 0%{transform:translateX(0) scaleY(1)} 40%{transform:translateX(-10px) scaleY(0.98)} 100%{transform:translateX(0) scaleY(1)} }
+    @keyframes looiTellEyeOpen     { 0%{transform:translateY(-18px) scale(1)} 100%{transform:translateY(-14px) scale(0.96)} }
+    @keyframes looiTellMouthOpen   { 0%,35%{opacity:0;transform:translate(-50%,10px) scale(0.7)} 70%{opacity:1;transform:translate(-50%,0) scale(1.12,1)} 100%{opacity:1;transform:translate(-50%,0) scale(1,0.55)} }
+    @keyframes looiTellMouthLoop   { 0%,100%{opacity:1;transform:translate(-50%,0) scale(1,0.55)} 50%{opacity:1;transform:translate(-50%,0) scale(1.12,1)} }
+    @keyframes looiTellMouthFinish { 0%{opacity:1;transform:translate(-50%,0) scale(1,0.55)} 45%{opacity:1;transform:translate(-50%,0) scale(1.05,0.65)} 100%{opacity:0;transform:translate(-50%,10px) scale(0.7)} }
+    @keyframes looiTellEyesFinish  { 0%,100%{transform:translateX(0) scaleY(1)} }
+    @keyframes looiTellEyeFinish   { 0%{transform:translateY(-14px) scale(0.96)} 100%{transform:translateY(-18px) scale(1)} }
+    @keyframes looiTellLeftMicOpen  { 0%{opacity:0;transform:translate(-120px,180px) rotate(24deg)} 100%{opacity:1;transform:translate(0,0) rotate(24deg)} }
+    @keyframes looiTellRightMicOpen { 0%{opacity:0;transform:translate(120px,180px) rotate(-24deg)} 100%{opacity:1;transform:translate(0,0) rotate(-24deg)} }
+    @keyframes looiTellLeftMicFinish  { 0%{opacity:1;transform:translate(0,0) rotate(24deg)} 100%{opacity:0;transform:translate(-90px,150px) rotate(24deg)} }
+    @keyframes looiTellRightMicFinish { 0%{opacity:1;transform:translate(0,0) rotate(-24deg)} 100%{opacity:0;transform:translate(90px,150px) rotate(-24deg)} }
+    @keyframes looiTellSparkOne    { 0%,36%,54%,100%{opacity:0;transform:scale(0.4) rotate(0)} 44%{opacity:1;transform:scale(1.15) rotate(20deg)} 50%{opacity:0.8;transform:scale(0.85) rotate(-12deg)} }
+    @keyframes looiTellSparkTwo    { 0%,50%,68%,100%{opacity:0;transform:scale(0.35) rotate(0)} 56%{opacity:1;transform:scale(1) rotate(-18deg)} 62%{opacity:0.75;transform:scale(0.8) rotate(12deg)} }
+    @keyframes looiTellSparkThree  { 0%,28%,42%,100%{opacity:0;transform:scale(0.3) rotate(0)} 34%{opacity:0.9;transform:scale(1) rotate(18deg)} }
+    @keyframes looiKissEyesMove    { 0%,100%{transform:translateX(0) scaleY(1)} 24%,72%{transform:translateX(-26px) scaleY(0.98)} }
+    @keyframes looiKissEye         { 0%,100%{width:clamp(126px,25vw,258px);height:clamp(104px,20vw,214px);transform:translateY(-18px) scale(1)} 26%,76%{width:clamp(136px,19vw,220px);height:clamp(92px,13vw,160px);transform:translateY(-8px) scale(0.96)} }
+    @keyframes looiKissLid         { 0%,100%{transform:translateY(125%)} 26%,76%{transform:translateY(14%)} }
+    @keyframes looiKissMouth       { 0%,12%{opacity:0;transform:translate(-50%,18px) scale(0.3) rotate(-8deg)} 22%{opacity:1;transform:translate(-50%,2px) scale(1.15,0.9) rotate(0deg)} 34%{opacity:1;transform:translate(-50%,0) scale(0.82,1.08) rotate(0deg)} 46%{opacity:1;transform:translate(-50%,0) scale(0.92) rotate(0deg)} 64%,100%{opacity:0;transform:translate(-50%,-8px) scale(0.25) rotate(8deg)} }
+    @keyframes looiBigKissHeart    { 0%,38%{opacity:0;transform:translate(-50%,-50%) rotate(-45deg) scale(0.25)} 48%{opacity:1;transform:translate(-50%,-50%) rotate(-45deg) scale(1)} 72%{opacity:0.65;transform:translate(-50%,-50%) rotate(-45deg) scale(10)} 100%{opacity:0;transform:translate(-50%,-50%) rotate(-45deg) scale(34)} }
+    @keyframes looiPictureEyesMove { 0%,12%{transform:translateX(var(--look-x)) scaleY(var(--look-scale-y))} 24%,48%{transform:translateX(-60px) scaleY(0.98)} 58%,72%{transform:translateX(-85px) scaleY(0.9)} 100%{transform:translateX(var(--look-x)) scaleY(var(--look-scale-y))} }
+    @keyframes looiPictureLeftEye  { 0%,30%,100%{width:clamp(126px,25vw,258px);height:clamp(104px,20vw,214px);transform:translateY(-10px) rotate(0deg)} 58%,72%{width:clamp(118px,22vw,230px);height:clamp(34px,5vw,62px);transform:translateY(-25px) rotate(10deg)} }
+    @keyframes looiPictureRightEye { 0%,30%,100%{width:clamp(126px,25vw,258px);height:clamp(104px,20vw,214px);transform:translateY(-10px) rotate(0deg)} 58%,72%{width:clamp(120px,22vw,232px);height:clamp(88px,16vw,180px);transform:translateY(-10px) rotate(0deg)} }
+    @keyframes looiCameraPop       { 0%,16%{opacity:0;transform:translate(-50%,140%) scale(0.9)} 28%,72%{opacity:1;transform:translate(-50%,0) scale(1)} 86%,100%{opacity:0;transform:translate(-50%,40%) scale(0.95)} }
+    @keyframes looiPhotoFlash      { 0%,64%{opacity:0} 66%{opacity:1} 73%,100%{opacity:0} }
+
+    /* ── STATUS BAR ── */
+    #status-bar {
+      position: absolute; top: max(12px,env(safe-area-inset-top)); right: max(12px,env(safe-area-inset-right));
+      display: flex; align-items: center; gap: 5px; z-index: 30;
+    }
+    .waveform-bar { width: 4px; height: 6px; background: #00d2ff; border-radius: 3px; transform-origin: center; transition: height 0.08s ease, background 0.3s ease; }
+    #state-text { color: #00d2ff; font-size: 11px; font-weight: bold; text-transform: uppercase; letter-spacing: 2px; margin-left: 6px; opacity: 0.7; }
+    #search-status {
+      position: absolute; top: max(48px,calc(env(safe-area-inset-top) + 38px)); left: 50%;
+      transform: translateX(-50%) translateY(-8px); display: flex; align-items: center; gap: 9px;
+      padding: 7px 14px; border: 1px solid rgba(255,210,92,0.5); border-radius: 999px;
+      background: rgba(24,18,4,0.78); color: #ffe28a; font-size: 10px; font-weight: 800;
+      letter-spacing: 1.8px; opacity: 0; pointer-events: none; z-index: 30;
+      transition: opacity 180ms ease, transform 220ms ease;
+    }
+    #search-status.visible { opacity: 1; transform: translateX(-50%) translateY(0); }
+    #search-status .search-orbit {
+      width: 12px; height: 12px; border: 2px solid rgba(255,226,138,0.28);
+      border-top-color: #ffe28a; border-right-color: #ffe28a; border-radius: 50%;
+      animation: searchOrbit 600ms linear infinite;
+    }
+    @keyframes searchOrbit { to { transform: rotate(360deg); } }
+    /* ── TRANSCRIPT / ERROR ── */
+    #transcript-bar {
+      position: absolute; bottom: max(16px,env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%);
+      max-width: 88vw; background: rgba(0,0,0,0.72); border: 1px solid #00d2ff44; border-radius: 20px;
+      padding: 7px 20px; color: #cce8ff; font-size: 13px; text-align: center; letter-spacing: 0.5px;
+      z-index: 30; pointer-events: none; opacity: 0; transition: opacity 0.4s ease;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    #transcript-bar.visible { opacity: 1; }
+    #error-toast {
+      position: absolute; bottom: max(62px,calc(env(safe-area-inset-bottom) + 46px)); left: 50%; transform: translateX(-50%);
+      background: rgba(180,30,30,0.85); border: 1px solid #ff4444; border-radius: 14px;
+      padding: 7px 18px; color: #ffaaaa; font-size: 12px; text-align: center;
+      z-index: 30; pointer-events: none; opacity: 0; transition: opacity 0.4s ease;
+    }
+    #error-toast.visible { opacity: 1; }
+
+    /* ── START OVERLAY ── */
+    #start-overlay {
+      position: fixed; z-index: 99; background: rgba(2,4,10,0.96); color: white;
+      width: 100%; height: 100%; display: flex; flex-direction: column;
+      justify-content: center; align-items: center; gap: 18px;
+    }
+    #start-overlay h1 { font-size: clamp(28px,6vw,48px); font-weight: 900; letter-spacing: 0.05em; color: #bdf3ff; text-shadow: 0 0 30px rgba(97,211,255,0.6); }
+    .start-creator { color: #61d3ff; font-size: 13px; font-weight: 600; letter-spacing: 2px; text-transform: uppercase; opacity: 0.8; margin-top: -10px; }
+    .start-tagline { color: #8fa8c4; font-size: 14px; text-align: center; max-width: 280px; line-height: 1.5; }
+    button { padding: 12px 24px; font-size: 16px; border-radius: 30px; border: none; background: #00d2ff; color: #000; font-weight: bold; cursor: pointer; transition: transform 0.2s; }
+    button:hover { transform: scale(1.05); }
+
+    /* ── FLASH OVERLAY (legacy camera flash) ── */
+    #flash-overlay { position: fixed; inset: 0; background: #fff; z-index: 200; pointer-events: none; opacity: 0; transition: none; }
+    #flash-overlay.flash-active { animation: cameraFlash 0.55s ease-out forwards; }
+    @keyframes cameraFlash { 0%{opacity:0} 8%{opacity:1} 100%{opacity:0} }
+
+    /* ── PHOTO MODAL ── */
+    #photo-modal { display: none; position: fixed; inset: 0; z-index: 300; background: rgba(0,0,0,0.82); justify-content: center; align-items: center; flex-direction: column; gap: 20px; }
+    #photo-modal.open { display: flex; }
+    #photo-modal img { max-width: min(90vw,480px); max-height: 55vh; border-radius: 18px; border: 3px solid #00d2ff; box-shadow: 0 0 40px #00d2ff88; object-fit: cover; }
+    #photo-modal .modal-label { color: #00d2ff; font-size: 13px; font-weight: bold; letter-spacing: 2px; text-transform: uppercase; opacity: 0.85; }
+    #photo-modal .modal-btns { display: flex; gap: 16px; }
+    #photo-modal .btn-save { background: #00d2ff; color: #000; }
+    #photo-modal .btn-discard { background: rgba(255,255,255,0.12); color: #fff; border: 1.5px solid rgba(255,255,255,0.25); }
+
+    /* ── VIDEO MODAL ── */
+    #video-modal { display: none; position: fixed; inset: 0; z-index: 250; background: rgba(0,0,0,0.96); justify-content: center; align-items: center; flex-direction: column; gap: 14px; padding: max(12px,env(safe-area-inset-top)) max(12px,env(safe-area-inset-right)) max(12px,env(safe-area-inset-bottom)) max(12px,env(safe-area-inset-left)); }
+    #video-modal.open { display: flex; }
+    #video-frame { width: min(94vw,calc((100dvh - 112px)*16/9),960px); max-width: 100%; max-height: calc(100dvh - 112px); aspect-ratio: 16/9; border: 1px solid #ff4fd888; border-radius: 14px; background: #050509; }
+    #tiktok-video { display: none; width: min(94vw,calc((100dvh - 112px)*9/16),520px); max-width: 100%; max-height: calc(100dvh - 112px); aspect-ratio: 9/16; border: 1px solid #ff4fd888; border-radius: 14px; background: #050509; object-fit: contain; }
+    #video-modal .video-title { max-width: 90vw; color: #ffb8f0; font-size: 14px; font-weight: 600; text-align: center; }
+    #video-modal .video-stop { background: #ff4fd8; color: #170013; font-size: 14px; padding: 10px 24px; }
+    @media (max-height: 520px) { #video-modal{gap:8px} #video-frame{width:min(94vw,calc((100dvh - 98px)*16/9),960px);max-height:calc(100dvh - 98px)} #tiktok-video{width:min(94vw,calc((100dvh - 98px)*9/16),360px);max-height:calc(100dvh - 98px)} #video-modal .video-title{font-size:12px} #video-modal .video-stop{padding:8px 20px;font-size:13px} }
+  </style>
+  <base target="_blank">
+</head>
+<body>
+
+  <div id="start-overlay">
+    <h1>LOOI</h1>
+    <div class="start-creator">by April Manalo</div>
+    <div class="start-tagline">AI Robot Companion — Express yourself, LOOI's watching 👁</div>
+    <div style="display:flex;flex-direction:column;align-items:center;gap:6px;margin-bottom:4px;">
+      <label style="color:#8fa8c4;font-size:12px;letter-spacing:1px;text-transform:uppercase;">BLE Device Name</label>
+      <input id="ble-name-input" type="text" value="LOOI_ESP32_ROBOT"
+        style="background:#0a0f1e;border:1px solid #00d2ff55;border-radius:8px;color:#00d2ff;
+               font-size:13px;padding:7px 14px;text-align:center;width:230px;outline:none;" />
+    </div>
+    <button id="connect-btn">Connect ESP32 &amp; Start LOOI</button>
+    <button id="voiceonly-btn" style="background:rgba(255,255,255,0.12);color:#fff;margin-top:-8px;font-size:14px;padding:10px 22px;">Start without Robot (Voice only)</button>
+  </div>
+
+  <div id="flash-overlay"></div>
+
+  <div id="photo-modal">
+    <div class="modal-label">📸 Photo captured!</div>
+    <img id="photo-preview" src="" alt="Captured photo" />
+    <div class="modal-btns">
+      <button class="btn-save" id="btn-save-photo">Save</button>
+      <button class="btn-discard" id="btn-discard-photo">Discard</button>
+    </div>
+  </div>
+
+  <div id="video-modal">
+    <iframe id="video-frame" title="LOOI video player"
+      allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen></iframe>
+    <video id="tiktok-video" playsinline controls></video>
+    <div class="video-title" id="video-title"></div>
+    <button class="video-stop" id="video-stop">■ Stop video</button>
+  </div>
+
+  <div id="robot-screen">
+    <div id="status-bar">
+      <div class="waveform-bar" id="wb1"></div>
+      <div class="waveform-bar" id="wb2"></div>
+      <div class="waveform-bar" id="wb3"></div>
+      <div class="waveform-bar" id="wb4"></div>
+      <div class="waveform-bar" id="wb5"></div>
+      <div class="waveform-bar" id="wb6"></div>
+      <div class="waveform-bar" id="wb7"></div>
+      <span id="state-text">IDLE</span>
+    </div>
+    <div id="search-status" aria-live="polite">
+      <span class="search-orbit"></span><span>SEARCHING WEB</span>
+    </div>
+    <div id="transcript-bar"></div>
+    <div id="error-toast"></div>
+    <!-- LOOI DOM face (replaces canvas) -->
+    <div id="faceCanvas"></div>
+  </div>
+
+  <script>
+  // ═══════════════════════════════════════════════════════════════
+  // LOOI FACE CONTROLLER  (inlined & adapted from faceCanvas.js)
+  // ═══════════════════════════════════════════════════════════════
+  const FACE_STATE = {
+    expression:'neutral', intensity:1, eyeDirection:'center',
+    speaking:false, thinking:false, sleeping:false,
+    autoBlinkTimer:0, autoGlanceTimer:0, autoGlanceReturnTimer:0, autoGlanceToken:0,
+    animationTimer:0, lookTimer:0, photoTimer:0, followTimer:0,
+    eatingTimer:0, drinkingTimer:0, questionTimer:0, angryTimer:0,
+    lovingTimer:0, shockedTimer:0, tellingTimer:0, kissTimer:0,
+    wakeTimer:0, previewTimer:0, latestPhotoUrl:'',
+    followVisualState:'idle', eatingVisualState:'idle',
+    drinkingVisualState:'idle', tellingVisualState:'idle'
+  };
+  const BLINK_TIME_MS=360,SOFT_CLOSE_TIME_MS=420,PHOTO_TIME_MS=2400,
+        FOLLOW_OPEN_TIME_MS=900,FOLLOW_STOP_TIME_MS=800,BITE_TIME_MS=3200,
+        FINISH_BURGER_TIME_MS=2200,DRINK_OPEN_TIME_MS=1600,FINISH_DRINK_TIME_MS=1800,
+        QUESTION_TIME_MS=2200,ANGRY_TIME_MS=1800,LOVING_TIME_MS=2400,
+        SHOCKED_TIME_MS=1700,TELL_OPEN_TIME_MS=1400,TELL_FINISH_TIME_MS=1200,
+        KISS_TIME_MS=2600,WAKE_ACTIVATION_TIME_MS=1900,
+        AUTO_BLINK_MIN_MS=2200,AUTO_BLINK_JITTER_MS=2400,
+        AUTO_GLANCE_MIN_MS=1400,AUTO_GLANCE_JITTER_MS=2200,
+        AUTO_GLANCE_DWELL_MIN_MS=420,AUTO_GLANCE_DWELL_JITTER_MS=420;
+  const SUPPORTED_DIRECTIONS=new Set(['center','left','right','up','down']);
+  let _rootRef=null, _eyesRef=null;
+
+  function _clamp(v,a,b){return Math.min(b,Math.max(a,v));}
+  function _forceRestart(){return _eyesRef?.offsetWidth??0;}
+  function _clearMomentaryAnims(){
+    if(!_eyesRef)return;
+    window.clearTimeout(FACE_STATE.animationTimer);
+    _eyesRef.classList.remove('is-blinking','is-soft-closing');
+  }
+  function _settleLookHeight(){
+    window.clearTimeout(FACE_STATE.lookTimer);
+    FACE_STATE.lookTimer=window.setTimeout(()=>_eyesRef?.style.setProperty('--look-scale-y','1'),260);
+  }
+  function _clearAllTimers(){
+    ['autoBlinkTimer','autoGlanceTimer','autoGlanceReturnTimer','animationTimer',
+     'lookTimer','photoTimer','followTimer','eatingTimer','drinkingTimer','questionTimer',
+     'angryTimer','lovingTimer','shockedTimer','tellingTimer','kissTimer','wakeTimer','previewTimer']
+    .forEach(k=>window.clearTimeout(FACE_STATE[k]));
+  }
+  function _hasBlockingFaceAnim(){
+    return Boolean(_rootRef?.classList.contains('is-taking-picture')||
+      _rootRef?.classList.contains('is-follow-opening')||_rootRef?.classList.contains('is-following')||
+      _rootRef?.classList.contains('is-follow-stopping')||_rootRef?.classList.contains('is-taking-bite')||
+      _rootRef?.classList.contains('is-bitten')||_rootRef?.classList.contains('is-finishing-burger')||
+      _rootRef?.classList.contains('is-drink-opening')||_rootRef?.classList.contains('is-drinking')||
+      _rootRef?.classList.contains('is-finish-drinking')||_rootRef?.classList.contains('is-questioning')||
+      _rootRef?.classList.contains('is-angry')||_rootRef?.classList.contains('is-loving')||
+      _rootRef?.classList.contains('is-shocked')||_rootRef?.classList.contains('is-tell-opening')||
+      _rootRef?.classList.contains('is-telling')||_rootRef?.classList.contains('is-tell-finishing')||
+      _rootRef?.classList.contains('is-kissing')||_rootRef?.classList.contains('is-wake-activating'));
+  }
+  function _normalizeExpr(e){
+    return ['neutral','happy','curious','attentive','sleepy','scared','shy','sad'].includes(e)?e:'neutral';
+  }
+
+  function _createEye(){
+    const eye=document.createElement('div'); eye.className='looi-eye';
+    const glow=document.createElement('div'); glow.className='looi-eye__glow';
+    const core=document.createElement('div'); core.className='looi-eye__core';
+    const scan=document.createElement('div'); scan.className='looi-eye__scan-line';
+    const lid=document.createElement('div');  lid.className='looi-eye__lid';
+    const loveLid=document.createElement('div'); loveLid.className='looi-eye__love-lid';
+    eye.append(glow,core,scan,lid,loveLid); return eye;
+  }
+
+  function _buildFaceDom(){
+    const frag=document.createDocumentFragment();
+    // Flash
+    const flash=document.createElement('div'); flash.className='looi-flash-screen';
+    // Photo preview
+    const preview=document.createElement('div'); preview.className='looi-photo-preview'; preview.hidden=true;
+    const pImg=document.createElement('img'); pImg.className='looi-photo-preview__image'; pImg.alt='Latest photo';
+    const pActs=document.createElement('div'); pActs.className='looi-photo-preview__actions';
+    const pDel=document.createElement('button'); pDel.className='looi-photo-preview__button looi-photo-preview__button--delete'; pDel.type='button'; pDel.textContent='DELETE'; pDel.addEventListener('click',_dismissFacePhoto);
+    const pSave=document.createElement('button'); pSave.className='looi-photo-preview__button looi-photo-preview__button--save'; pSave.type='button'; pSave.textContent='SAVE'; pSave.addEventListener('click',_saveFacePhoto);
+    pActs.append(pDel,pSave); preview.append(pImg,pActs);
+    // Camera icon
+    const cam=document.createElement('div'); cam.className='looi-camera-icon';
+    cam.innerHTML='<div class="looi-camera-icon__top"></div><div class="looi-camera-icon__body"></div><div class="looi-camera-icon__lens"></div><div class="looi-camera-icon__flash-dot"></div>';
+    // Follow target
+    const followT=document.createElement('div'); followT.className='looi-follow-target';
+    const followS=document.createElement('div'); followS.className='looi-follow-shine'; followT.append(followS);
+    // Eating
+    const eatMouth=document.createElement('div'); eatMouth.className='looi-eating-mouth';
+    const crumb1=document.createElement('div'); crumb1.className='looi-eating-crumb looi-eating-crumb--one';
+    const crumb2=document.createElement('div'); crumb2.className='looi-eating-crumb looi-eating-crumb--two';
+    const burger=document.createElement('div'); burger.className='looi-burger';
+    burger.innerHTML='<div class="looi-burger__bun-top"></div><div class="looi-burger__bite"></div><div class="looi-burger__cheese"></div><div class="looi-burger__lettuce"></div><div class="looi-burger__patty"></div><div class="looi-burger__bun-bottom"></div>';
+    // Drink
+    const drinkMouth=document.createElement('div'); drinkMouth.className='looi-drink-mouth';
+    const sipDots=['one','two','three','four'].map(n=>{ const d=document.createElement('div'); d.className=`looi-sip-dot looi-sip-dot--${n}`; return d; });
+    const drinkStraw=document.createElementNS('http://www.w3.org/2000/svg','svg');
+    drinkStraw.classList.add('looi-drink-straw'); drinkStraw.setAttribute('viewBox','0 0 240 190'); drinkStraw.setAttribute('aria-hidden','true');
+    drinkStraw.innerHTML='<path class="looi-drink-straw__shadow" d="M120 150 L120 86 Q120 48 152 44 L184 38"></path><path class="looi-drink-straw__path" d="M120 150 L120 86 Q120 48 152 44 L184 38"></path>';
+    const drinkCan=document.createElement('div'); drinkCan.className='looi-drink-can';
+    // Thought dots
+    const thoughtDots=['one','two'].map(n=>{ const d=document.createElement('div'); d.className=`looi-thought-dot looi-thought-dot--${n}`; return d; });
+    // Question
+    const qMark=document.createElement('div'); qMark.className='looi-question-mark'; qMark.setAttribute('aria-hidden','true');
+    qMark.innerHTML='<svg viewBox="0 0 100 130"><path class="looi-question-mark__stroke" d="M34 34 C34 16 68 14 73 34 C77 49 65 58 54 65 C47 70 46 76 46 83"></path><path class="looi-question-mark__highlight" d="M39 29 C48 20 63 23 67 34"></path><circle class="looi-question-mark__dot" cx="46" cy="111" r="9"></circle></svg>';
+    // Angry spark
+    const spark=document.createElement('div'); spark.className='looi-angry-spark'; spark.setAttribute('aria-hidden','true');
+    spark.innerHTML='<svg viewBox="0 0 100 100"><path class="looi-angry-spark__main" d="M50 8 C52 32 58 42 84 46 C58 50 52 60 50 92 C48 60 42 50 16 46 C42 42 48 32 50 8 Z"></path><path class="looi-angry-spark__highlight" d="M39 22 C43 36 48 41 62 43"></path></svg>';
+    // Loving hearts
+    const hearts=document.createElement('div'); hearts.className='looi-loving-hearts'; hearts.setAttribute('aria-hidden','true');
+    hearts.innerHTML='<div class="looi-loving-heart looi-loving-heart--one"></div><div class="looi-loving-heart looi-loving-heart--two"></div><div class="looi-loving-heart looi-loving-heart--three"></div><div class="looi-loving-heart looi-loving-heart--four"></div>';
+    // Shock
+    const shockEx=document.createElement('div'); shockEx.className='looi-shock-exclaim'; shockEx.setAttribute('aria-hidden','true');
+    shockEx.innerHTML='<div class="looi-shock-exclaim__bar"></div><div class="looi-shock-exclaim__dot"></div>';
+    // Tell sparks + mics + mouth
+    const tellSparks=['one','two','three'].map(n=>{ const s=document.createElement('div'); s.className=`looi-tell-spark looi-tell-spark--${n}`; return s; });
+    const tellLMic=document.createElement('div'); tellLMic.className='looi-tell-mic looi-tell-mic--left'; tellLMic.innerHTML='<div class="looi-tell-mic__flag">TV</div>';
+    const tellRMic=document.createElement('div'); tellRMic.className='looi-tell-mic looi-tell-mic--right'; tellRMic.innerHTML='<div class="looi-tell-mic__flag">NEWS</div>';
+    const tellMouth=document.createElement('div'); tellMouth.className='looi-tell-mouth';
+    // Kiss
+    const kissMouth=document.createElement('div'); kissMouth.className='looi-kiss-mouth';
+    const kissHeart=document.createElement('div'); kissHeart.className='looi-kiss-heart';
+    // Wake
+    const wakeL=document.createElement('div'); wakeL.className='looi-wake-side-light looi-wake-side-light--left'; wakeL.setAttribute('aria-hidden','true');
+    const wakeR=document.createElement('div'); wakeR.className='looi-wake-side-light looi-wake-side-light--right'; wakeR.setAttribute('aria-hidden','true');
+    const wakeSparks=['one','two','three'].map(n=>{ const s=document.createElement('div'); s.className=`looi-wake-spark looi-wake-spark--${n}`; s.setAttribute('aria-hidden','true'); return s; });
+    // Eyes
+    const eyes=document.createElement('div'); eyes.className='looi-eyes'; eyes.append(_createEye(),_createEye());
+    frag.append(flash,eatMouth,crumb1,crumb2,burger,drinkMouth,...sipDots,drinkStraw,drinkCan,...thoughtDots,qMark,spark,hearts,shockEx,...tellSparks,tellLMic,tellRMic,tellMouth,kissMouth,kissHeart,wakeL,wakeR,...wakeSparks,followT,preview,cam,eyes);
+    return frag;
+  }
+
+  function _initFaceCanvas(el){
+    _rootRef=el; _clearAllTimers();
+    if(!_rootRef)return;
+    FACE_STATE.tellingVisualState='idle'; FACE_STATE.thinking=false;
+    _rootRef.replaceChildren(_buildFaceDom());
+    _rootRef.classList.add('looi-eye-system');
+    _rootRef.classList.remove('is-taking-picture','is-follow-opening','is-following','is-follow-stopping',
+      'is-taking-bite','is-bitten','is-finishing-burger','is-drink-opening','is-drinking','is-finish-drinking',
+      'is-questioning','is-angry','is-loving','is-shocked','is-tell-opening','is-telling','is-tell-finishing',
+      'is-kissing','is-wake-activating','is-thinking');
+    _rootRef.setAttribute('role','img'); _rootRef.setAttribute('aria-label','LOOI animated robot eyes');
+    _eyesRef=_rootRef.querySelector('.looi-eyes');
+    _faceOpenEyes(); _scheduleNextBlink(); _scheduleNextGlance();
+  }
+
+  function _faceSetExpression(expr,intensity=1){
+    FACE_STATE.expression=_normalizeExpr(expr);
+    FACE_STATE.intensity=_clamp(Number(intensity)||1,0,1.5);
+    _applyExpression();
+  }
+  function _applyExpression(){
+    if(!_eyesRef)return;
+    _eyesRef.dataset.expression=FACE_STATE.expression;
+    _eyesRef.style.setProperty('--expression-intensity',String(FACE_STATE.intensity));
+    if(FACE_STATE.speaking)return;
+    if(FACE_STATE.expression==='sleepy'){_faceSleep();return;}
+    if(['shy','sad'].includes(FACE_STATE.expression)){_faceSoftClose();return;}
+    _faceOpenEyes();
+  }
+
+  function _faceSetEyeDir(dir,{auto=false}={}){
+    if(!auto){FACE_STATE.autoGlanceToken+=1;window.clearTimeout(FACE_STATE.autoGlanceReturnTimer);_scheduleNextGlance();}
+    const d=SUPPORTED_DIRECTIONS.has(dir)?dir:'center';
+    FACE_STATE.eyeDirection=d;
+    if(d==='left'){_faceLookLeft();return;}
+    if(d==='right'){_faceLookRight();return;}
+    if(d==='down'){_faceSoftClose();return;}
+    _faceOpenEyes();
+  }
+  function _faceBlink(){
+    if(!_eyesRef||FACE_STATE.speaking||FACE_STATE.sleeping||_hasBlockingFaceAnim()){_scheduleNextBlink();return;}
+    _clearMomentaryAnims(); _forceRestart();
+    _eyesRef.classList.add('is-blinking');
+    FACE_STATE.animationTimer=window.setTimeout(_clearMomentaryAnims,BLINK_TIME_MS);
+    _scheduleNextBlink();
+  }
+  function _faceSoftClose(){
+    if(!_eyesRef||FACE_STATE.speaking||FACE_STATE.sleeping||_hasBlockingFaceAnim())return;
+    _clearMomentaryAnims(); _forceRestart();
+    _eyesRef.classList.add('is-soft-closing');
+    FACE_STATE.animationTimer=window.setTimeout(_clearMomentaryAnims,SOFT_CLOSE_TIME_MS);
+  }
+  function _faceOpenEyes(){
+    if(!_eyesRef)return;
+    _clearMomentaryAnims(); window.clearTimeout(FACE_STATE.lookTimer);
+    FACE_STATE.sleeping=false; _eyesRef.classList.remove('is-sleeping');
+    _eyesRef.style.setProperty('--look-x','0px');
+    _eyesRef.style.setProperty('--look-scale-y','1');
+    _eyesRef.style.setProperty('--glow-dir','1');
+  }
+  function _faceLookLeft(){
+    if(!_eyesRef||FACE_STATE.sleeping)return;
+    _clearMomentaryAnims();
+    _eyesRef.style.setProperty('--look-x','-42px');
+    _eyesRef.style.setProperty('--look-scale-y','0.92');
+    _eyesRef.style.setProperty('--glow-dir','1');
+    _settleLookHeight();
+  }
+  function _faceLookRight(){
+    if(!_eyesRef||FACE_STATE.sleeping)return;
+    _clearMomentaryAnims();
+    _eyesRef.style.setProperty('--look-x','42px');
+    _eyesRef.style.setProperty('--look-scale-y','0.92');
+    _eyesRef.style.setProperty('--glow-dir','1');
+    _settleLookHeight();
+  }
+  function _faceSleep(){
+    if(!_eyesRef)return;
+    _clearMomentaryAnims(); window.clearTimeout(FACE_STATE.lookTimer);
+    FACE_STATE.sleeping=true; _eyesRef.style.setProperty('--look-x','0px');
+    _eyesRef.style.setProperty('--look-scale-y','1'); _forceRestart();
+    _eyesRef.classList.add('is-sleeping');
+  }
+  function _faceSetSpeaking(v){
+    FACE_STATE.speaking=Boolean(v);
+    if(!_eyesRef)return;
+    _eyesRef.classList.toggle('is-speaking',FACE_STATE.speaking);
+    if(FACE_STATE.speaking){
+      _faceSetThinking(false); _clearMomentaryAnims();
+      window.clearTimeout(FACE_STATE.kissTimer); _rootRef?.classList.remove('is-kissing');
+      if(FACE_STATE.sleeping)_faceOpenEyes(); return;
+    }
+    _scheduleNextBlink();
+  }
+  function _faceSetThinking(v){
+    const next=Boolean(v);
+    if(FACE_STATE.thinking===next)return;
+    FACE_STATE.thinking=next;
+    if(!_rootRef)return;
+    _rootRef.classList.toggle('is-thinking',FACE_STATE.thinking);
+  }
+  function _faceTakePicture(){
+    if(!_rootRef||!_eyesRef)return;
+    _clearMomentaryAnims(); window.clearTimeout(FACE_STATE.lookTimer);
+    window.clearTimeout(FACE_STATE.photoTimer); window.clearTimeout(FACE_STATE.followTimer);
+    FACE_STATE.sleeping=false; _eyesRef.classList.remove('is-sleeping');
+    _eyesRef.style.setProperty('--look-x','0px'); _eyesRef.style.setProperty('--look-scale-y','1');
+    _forceRestart(); _rootRef.classList.remove('is-taking-picture');
+    _rootRef.classList.add('is-taking-picture');
+    FACE_STATE.photoTimer=window.setTimeout(()=>_rootRef?.classList.remove('is-taking-picture'),PHOTO_TIME_MS);
+  }
+  function _faceTakeBite(){
+    if(!_rootRef||!_eyesRef)return;
+    _clearMomentaryAnims(); window.clearTimeout(FACE_STATE.lookTimer); window.clearTimeout(FACE_STATE.eatingTimer);
+    FACE_STATE.sleeping=false; FACE_STATE.eatingVisualState='taking_bite';
+    _rootRef.classList.remove('is-taking-bite','is-finishing-burger','is-bitten');
+    _eyesRef.classList.remove('is-sleeping'); _forceRestart();
+    _rootRef.classList.add('is-taking-bite');
+    FACE_STATE.eatingTimer=window.setTimeout(()=>{
+      FACE_STATE.eatingVisualState='bitten';
+      _rootRef?.classList.remove('is-taking-bite'); _rootRef?.classList.add('is-bitten');
+    },BITE_TIME_MS);
+  }
+  function _faceFinishBurger(){
+    if(!_rootRef||!_eyesRef||!_isEatingActive())return;
+    _clearMomentaryAnims(); window.clearTimeout(FACE_STATE.lookTimer); window.clearTimeout(FACE_STATE.eatingTimer);
+    FACE_STATE.eatingVisualState='finishing';
+    _rootRef.classList.remove('is-taking-bite','is-bitten'); _eyesRef.classList.remove('is-sleeping');
+    _forceRestart(); _rootRef.classList.add('is-finishing-burger');
+    FACE_STATE.eatingTimer=window.setTimeout(()=>{
+      FACE_STATE.eatingVisualState='idle'; _rootRef?.classList.remove('is-finishing-burger');
+    },FINISH_BURGER_TIME_MS);
+  }
+  function _isEatingActive(){return Boolean(FACE_STATE.eatingVisualState!=='idle'||_rootRef?.classList.contains('is-taking-bite')||_rootRef?.classList.contains('is-bitten')||_rootRef?.classList.contains('is-finishing-burger'));}
+  function _faceOpenDrink(){
+    if(!_rootRef||!_eyesRef)return;
+    _clearMomentaryAnims(); window.clearTimeout(FACE_STATE.lookTimer); window.clearTimeout(FACE_STATE.drinkingTimer);
+    FACE_STATE.sleeping=false; FACE_STATE.drinkingVisualState='opening';
+    _rootRef.classList.remove('is-drink-opening','is-drinking','is-finish-drinking');
+    _eyesRef.classList.remove('is-sleeping'); _forceRestart();
+    _rootRef.classList.add('is-drink-opening');
+    FACE_STATE.drinkingTimer=window.setTimeout(()=>{
+      FACE_STATE.drinkingVisualState='drinking';
+      _rootRef?.classList.remove('is-drink-opening'); _rootRef?.classList.add('is-drinking');
+    },DRINK_OPEN_TIME_MS);
+  }
+  function _faceFinishDrink(){
+    if(!_rootRef||!_eyesRef||!_isDrinkingActive())return;
+    _clearMomentaryAnims(); window.clearTimeout(FACE_STATE.lookTimer); window.clearTimeout(FACE_STATE.drinkingTimer);
+    FACE_STATE.drinkingVisualState='finishing';
+    _rootRef.classList.remove('is-drink-opening','is-drinking'); _eyesRef.classList.remove('is-sleeping');
+    _forceRestart(); _rootRef.classList.add('is-finish-drinking');
+    FACE_STATE.drinkingTimer=window.setTimeout(()=>{
+      FACE_STATE.drinkingVisualState='idle'; _rootRef?.classList.remove('is-finish-drinking');
+    },FINISH_DRINK_TIME_MS);
+  }
+  function _isDrinkingActive(){return Boolean(FACE_STATE.drinkingVisualState!=='idle'||_rootRef?.classList.contains('is-drink-opening')||_rootRef?.classList.contains('is-drinking')||_rootRef?.classList.contains('is-finish-drinking'));}
+  function _faceShowQuestion(){
+    if(!_rootRef||!_eyesRef)return;
+    _clearMomentaryAnims(); window.clearTimeout(FACE_STATE.lookTimer); window.clearTimeout(FACE_STATE.questionTimer);
+    FACE_STATE.sleeping=false; _eyesRef.classList.remove('is-sleeping');
+    _rootRef.classList.remove('is-questioning'); _forceRestart();
+    _rootRef.classList.add('is-questioning');
+    FACE_STATE.questionTimer=window.setTimeout(()=>_rootRef?.classList.remove('is-questioning'),QUESTION_TIME_MS);
+  }
+  function _faceShowAngry(){
+    if(!_rootRef||!_eyesRef)return;
+    _clearMomentaryAnims(); window.clearTimeout(FACE_STATE.lookTimer); window.clearTimeout(FACE_STATE.angryTimer);
+    FACE_STATE.sleeping=false; _eyesRef.classList.remove('is-sleeping');
+    _rootRef.classList.remove('is-angry'); _forceRestart();
+    _rootRef.classList.add('is-angry');
+    FACE_STATE.angryTimer=window.setTimeout(()=>_rootRef?.classList.remove('is-angry'),ANGRY_TIME_MS);
+  }
+  function _faceShowLoving(){
+    if(!_rootRef||!_eyesRef)return;
+    _clearMomentaryAnims(); window.clearTimeout(FACE_STATE.lookTimer); window.clearTimeout(FACE_STATE.lovingTimer);
+    FACE_STATE.sleeping=false; _eyesRef.classList.remove('is-sleeping');
+    _rootRef.classList.remove('is-loving'); _forceRestart();
+    _rootRef.classList.add('is-loving');
+    FACE_STATE.lovingTimer=window.setTimeout(()=>_rootRef?.classList.remove('is-loving'),LOVING_TIME_MS);
+  }
+  function _faceShowShocked(){
+    if(!_rootRef||!_eyesRef)return;
+    _clearMomentaryAnims(); window.clearTimeout(FACE_STATE.lookTimer); window.clearTimeout(FACE_STATE.shockedTimer);
+    FACE_STATE.sleeping=false; _eyesRef.classList.remove('is-sleeping');
+    _rootRef.classList.remove('is-shocked'); _forceRestart();
+    _rootRef.classList.add('is-shocked');
+    FACE_STATE.shockedTimer=window.setTimeout(()=>_rootRef?.classList.remove('is-shocked'),SHOCKED_TIME_MS);
+  }
+  function _faceShowTell(){
+    if(!_rootRef||!_eyesRef)return;
+    _clearMomentaryAnims(); window.clearTimeout(FACE_STATE.lookTimer); window.clearTimeout(FACE_STATE.tellingTimer);
+    FACE_STATE.sleeping=false; FACE_STATE.tellingVisualState='opening';
+    _eyesRef.classList.remove('is-sleeping');
+    _rootRef.classList.remove('is-tell-opening','is-telling','is-tell-finishing');
+    _forceRestart(); _rootRef.classList.add('is-tell-opening');
+    FACE_STATE.tellingTimer=window.setTimeout(()=>{
+      FACE_STATE.tellingVisualState='telling';
+      _rootRef?.classList.remove('is-tell-opening'); _rootRef?.classList.add('is-telling');
+    },TELL_OPEN_TIME_MS);
+  }
+  function _faceFinishTell(){
+    if(!_rootRef||!_eyesRef||!_isTellingActive())return;
+    _clearMomentaryAnims(); window.clearTimeout(FACE_STATE.lookTimer); window.clearTimeout(FACE_STATE.tellingTimer);
+    FACE_STATE.tellingVisualState='finishing';
+    _rootRef.classList.remove('is-tell-opening','is-telling'); _eyesRef.classList.remove('is-sleeping');
+    _forceRestart(); _rootRef.classList.add('is-tell-finishing');
+    FACE_STATE.tellingTimer=window.setTimeout(()=>{
+      FACE_STATE.tellingVisualState='idle'; _rootRef?.classList.remove('is-tell-finishing');
+    },TELL_FINISH_TIME_MS);
+  }
+  function _isTellingActive(){return Boolean(FACE_STATE.tellingVisualState!=='idle'||_rootRef?.classList.contains('is-tell-opening')||_rootRef?.classList.contains('is-telling')||_rootRef?.classList.contains('is-tell-finishing'));}
+  function _faceShowKiss(){
+    if(!_rootRef||!_eyesRef||FACE_STATE.speaking)return false;
+    _clearMomentaryAnims(); window.clearTimeout(FACE_STATE.lookTimer); window.clearTimeout(FACE_STATE.kissTimer);
+    FACE_STATE.sleeping=false; _eyesRef.classList.remove('is-sleeping');
+    _rootRef.classList.remove('is-kissing'); _forceRestart();
+    _rootRef.classList.add('is-kissing');
+    FACE_STATE.kissTimer=window.setTimeout(()=>_rootRef?.classList.remove('is-kissing'),KISS_TIME_MS);
+    return true;
+  }
+  function _faceShowWake(){
+    if(!_rootRef)return false;
+    window.clearTimeout(FACE_STATE.wakeTimer);
+    _rootRef.classList.remove('is-wake-activating'); _forceRestart();
+    _rootRef.classList.add('is-wake-activating');
+    FACE_STATE.wakeTimer=window.setTimeout(()=>_rootRef?.classList.remove('is-wake-activating'),WAKE_ACTIVATION_TIME_MS);
+    return true;
+  }
+  function _showFacePhoto(url,{dismissMs=5000}={}){
+    if(!_rootRef||typeof url!=='string'||!url.startsWith('data:image/'))return;
+    const preview=_rootRef.querySelector('.looi-photo-preview');
+    const image=_rootRef.querySelector('.looi-photo-preview__image');
+    if(!preview||!image)return;
+    window.clearTimeout(FACE_STATE.previewTimer);
+    FACE_STATE.latestPhotoUrl=url; image.setAttribute('src',url);
+    preview.hidden=false; preview.classList.add('is-visible');
+    FACE_STATE.previewTimer=window.setTimeout(()=>_dismissFacePhoto(),Math.max(1000,Number(dismissMs)||5000));
+  }
+  function _dismissFacePhoto(){
+    if(!_rootRef)return;
+    window.clearTimeout(FACE_STATE.previewTimer);
+    const preview=_rootRef.querySelector('.looi-photo-preview');
+    const image=_rootRef.querySelector('.looi-photo-preview__image');
+    preview?.classList.remove('is-visible'); if(preview)preview.hidden=true;
+    image?.removeAttribute('src'); FACE_STATE.latestPhotoUrl=''; _faceOpenEyes();
+  }
+  function _saveFacePhoto(){
+    if(!FACE_STATE.latestPhotoUrl){_dismissFacePhoto();return;}
+    const link=document.createElement('a');
+    link.href=FACE_STATE.latestPhotoUrl;
+    link.download=`looi-photo-${new Date().toISOString().replace(/[:.]/g,'-')}.jpg`;
+    document.body.append(link); link.click(); link.remove(); _dismissFacePhoto();
+  }
+
+  function _scheduleNextBlink(){
+    window.clearTimeout(FACE_STATE.autoBlinkTimer);
+    FACE_STATE.autoBlinkTimer=window.setTimeout(()=>{
+      if(FACE_STATE.speaking||FACE_STATE.sleeping){_scheduleNextBlink();return;}
+      _faceBlink();
+    },AUTO_BLINK_MIN_MS+Math.random()*AUTO_BLINK_JITTER_MS);
+  }
+  function _scheduleNextGlance(){
+    window.clearTimeout(FACE_STATE.autoGlanceTimer);
+    FACE_STATE.autoGlanceTimer=window.setTimeout(()=>{
+      if(!_canAutoGlance()){_scheduleNextGlance();return;}
+      const token=FACE_STATE.autoGlanceToken+1;
+      const dir=_chooseAutoGlanceDir();
+      FACE_STATE.autoGlanceToken=token;
+      _faceSetEyeDir(dir,{auto:true});
+      window.clearTimeout(FACE_STATE.autoGlanceReturnTimer);
+      FACE_STATE.autoGlanceReturnTimer=window.setTimeout(()=>{
+        if(FACE_STATE.autoGlanceToken===token&&_canAutoGlance()){
+          _faceSetEyeDir('center',{auto:true});
+        }
+        _scheduleNextGlance();
+      },AUTO_GLANCE_DWELL_MIN_MS+Math.random()*AUTO_GLANCE_DWELL_JITTER_MS);
+    },AUTO_GLANCE_MIN_MS+Math.random()*AUTO_GLANCE_JITTER_MS);
+  }
+  function _canAutoGlance(){
+    return Boolean(_eyesRef&&!FACE_STATE.speaking&&!FACE_STATE.sleeping&&!_hasBlockingFaceAnim()&&
+      !_eyesRef.classList.contains('is-blinking')&&!_eyesRef.classList.contains('is-soft-closing'));
+  }
+  function _chooseAutoGlanceDir(){
+    if(FACE_STATE.eyeDirection==='left')return 'right';
+    if(FACE_STATE.eyeDirection==='right')return 'left';
+    return Math.random()<0.5?'left':'right';
+  }
+
+  // Initialise face
+  _initFaceCanvas(document.getElementById('faceCanvas'));
+
+  // ═══════════════════════════════════════════════════════════════
+  // EXPRESSION BRIDGE  — maps currentExpression / robotState
+  //                      → LOOI face controller calls
+  // ═══════════════════════════════════════════════════════════════
+  let currentExpression = 'IDLE';
+  let robotState = 'IDLE';
+  let _lastAppliedExpr = '';
+  let _lastRobotState = '';
+  let _newsTellActive = false;
+
+  function _applyExpressionToFace(expr) {
+    // Finish news/tell if active and switching away
+    if (_newsTellActive && expr !== 'NEWS') {
+      _faceFinishTell(); _newsTellActive = false;
+    }
+    switch (expr) {
+      case 'IDLE':     _faceSetExpression('neutral'); break;
+      case 'HAPPY':    _faceSetExpression('happy'); _faceShowLoving(); break;
+      case 'LOVING':   _faceSetExpression('happy'); _faceShowLoving(); break;
+      case 'ANGRY':    _faceSetExpression('neutral'); _faceShowAngry(); break;
+      case 'SAD':      _faceSetExpression('sad'); break;
+      case 'CAMERA':   _faceTakePicture(); break;
+      case 'SCANNING': _faceSetExpression('attentive'); break;
+      case 'WINK':     _faceSetExpression('shy'); _faceShowKiss(); break;
+      case 'KISS':     _faceShowKiss(); break;
+      case 'SHOCKED':  _faceSetExpression('scared'); _faceShowShocked(); break;
+      case 'QUESTION': _faceShowQuestion(); break;
+      case 'MUSIC':    _faceSetExpression('happy'); break;
+      case 'BURGER':   _faceSetExpression('happy'); _faceTakeBite(); break;
+      case 'JUICE':    _faceSetExpression('happy'); _faceOpenDrink(); break;
+      case 'NEWS':
+        _faceSetExpression('attentive');
+        _faceShowTell(); _newsTellActive = true;
+        break;
+      default:         _faceSetExpression('neutral');
+    }
+  }
+
+  // Poll for expression / state changes every 80ms
+  setInterval(() => {
+    // Expression changes
+    if (currentExpression !== _lastAppliedExpr) {
+      // If switching away from eating/drinking, trigger finish animations so they don't stay stuck
+      if (_lastAppliedExpr === 'BURGER' && _isEatingActive()) _faceFinishBurger();
+      if (_lastAppliedExpr === 'JUICE'  && _isDrinkingActive()) _faceFinishDrink();
+      _lastAppliedExpr = currentExpression;
+      _applyExpressionToFace(currentExpression);
+    }
+    // robotState → speaking / thinking
+    if (robotState !== _lastRobotState) {
+      const prevState = _lastRobotState;
+      _lastRobotState = robotState;
+      const isSpeaking = (robotState === 'SPEAKING');
+      const isThinking = (robotState === 'THINKING');
+      _faceSetSpeaking(isSpeaking);
+      _faceSetThinking(isThinking);
+      // When AI finishes speaking, clean up any lingering eating/drinking animations
+      if (robotState === 'IDLE' && (prevState === 'SPEAKING' || prevState === 'THINKING')) {
+        if (_isEatingActive()) {
+          _faceFinishBurger();
+          currentExpression = 'IDLE'; _lastAppliedExpr = 'IDLE';
+        }
+        if (_isDrinkingActive()) {
+          _faceFinishDrink();
+          currentExpression = 'IDLE'; _lastAppliedExpr = 'IDLE';
+        }
+      }
+    }
+  }, 80);
+
+  // ═══════════════════════════════════════════════════════════════
+  // CAMERA FEATURE (for take-picture animation & manual capture)
+  // ═══════════════════════════════════════════════════════════════
+  let cameraAnimPhase = 'none';
+  let cameraCaptured = false;
+
+  // ── UNIFIED FRONT CAMERA ──────────────────────────────────
+  let _frontStream=null, _frontVideo=null, _frontReady=false;
+
+  async function startFrontCamera(){
+    if(_frontReady&&_frontVideo&&_frontVideo.readyState>=2)return true;
+    try{
+      if(_frontStream){_frontStream.getTracks().forEach(t=>t.stop());}
+      _frontStream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'user',width:{ideal:640},height:{ideal:480}},audio:false});
+      _frontVideo=document.createElement('video'); _frontVideo.srcObject=_frontStream;
+      _frontVideo.playsInline=true; _frontVideo.muted=true;
+      await _frontVideo.play();
+      await new Promise(r=>setTimeout(r,700));
+      _frontReady=true; console.log('[FrontCam] ready'); return true;
+    }catch(err){console.warn('[FrontCam] failed:',err.message);_frontReady=false;return false;}
+  }
+  function stopFrontCamera(){
+    _frontReady=false;
+    if(_frontStream){_frontStream.getTracks().forEach(t=>t.stop());}
+    _frontStream=null; _frontVideo=null; console.log('[FrontCam] stopped');
+  }
+
+  // ── LIVE FRAME STREAMING ─────────────────────────────────
+  let _liveFrameTimer=null, _liveFrameCanvas=null;
+  function startLiveFrameStream(){
+    if(_liveFrameTimer)return;
+    _liveFrameCanvas=document.createElement('canvas'); _liveFrameCanvas.width=320; _liveFrameCanvas.height=240;
+    const fc=_liveFrameCanvas.getContext('2d');
+    _liveFrameTimer=setInterval(()=>{
+      if(!geminiWs||geminiWs.readyState!==WebSocket.OPEN)return;
+      if(robotState==='SPEAKING')return;
+      if(!_frontVideo||_frontVideo.readyState<2)return;
+      try{
+        fc.drawImage(_frontVideo,0,0,320,240);
+        const b64=_liveFrameCanvas.toDataURL('image/jpeg',0.55).replace(/^data:image\/\w+;base64,/,'');
+        geminiWs.send(JSON.stringify({realtimeInput:{video:{data:b64,mimeType:'image/jpeg'}}}));
+      }catch(_){}
+    },2000);
+  }
+  function stopLiveFrameStream(){if(_liveFrameTimer){clearInterval(_liveFrameTimer);_liveFrameTimer=null;}}
+
+  function playCameraShutter(){
+    try{
+      const sCtx=new(window.AudioContext||window.webkitAudioContext)(),sr=sCtx.sampleRate;
+      const cLen=Math.floor(sr*0.06),cBuf=sCtx.createBuffer(1,cLen,sr),cData=cBuf.getChannelData(0);
+      for(let i=0;i<cLen;i++)cData[i]=(Math.random()*2-1)*Math.exp(-i/(sr*0.008));
+      const tLen=Math.floor(sr*0.12),tBuf=sCtx.createBuffer(1,tLen,sr),tData=tBuf.getChannelData(0);
+      for(let i=0;i<tLen;i++)tData[i]=(Math.random()*2-1)*Math.exp(-i/(sr*0.03))*0.35;
+      const cSrc=sCtx.createBufferSource(); cSrc.buffer=cBuf;
+      const tSrc=sCtx.createBufferSource(); tSrc.buffer=tBuf;
+      const gain=sCtx.createGain(); gain.gain.value=0.7;
+      cSrc.connect(gain); tSrc.connect(gain); gain.connect(sCtx.destination);
+      cSrc.start(0); tSrc.start(sCtx.currentTime+0.03);
+    }catch(e){console.warn('Shutter sound error',e);}
+  }
+
+  async function triggerCameraCapture(){
+    if(cameraAnimPhase!=='none'||cameraCaptured)return;
+    cameraCaptured=true; cameraAnimPhase='raising';
+    // Trigger LOOI camera animation
+    _faceTakePicture();
+    await new Promise(r=>setTimeout(r,750));
+    let videoStream;
+    try{videoStream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'user'},audio:false});}
+    catch(err){
+      console.warn('Camera access denied:',err);
+      cameraAnimPhase='none'; cameraCaptured=false; currentExpression='IDLE'; return;
+    }
+    const video=document.createElement('video'); video.srcObject=videoStream; video.playsInline=true;
+    await video.play(); await new Promise(r=>setTimeout(r,400));
+    const flashEl=document.getElementById('flash-overlay');
+    flashEl.classList.remove('flash-active'); void flashEl.offsetWidth; flashEl.classList.add('flash-active');
+    playCameraShutter();
+    const cap=document.createElement('canvas'); cap.width=video.videoWidth||640; cap.height=video.videoHeight||480;
+    const capCtx=cap.getContext('2d'); capCtx.translate(cap.width,0); capCtx.scale(-1,1);
+    capCtx.drawImage(video,0,0); videoStream.getTracks().forEach(t=>t.stop());
+    await new Promise(r=>setTimeout(r,350));
+    cameraAnimPhase='none'; currentExpression='HAPPY';
+    const photoDataURL=cap.toDataURL('image/jpeg',0.92);
+    document.getElementById('photo-preview').src=photoDataURL;
+    document.getElementById('photo-modal').classList.add('open');
+    document.getElementById('btn-save-photo').dataset.photoUrl=photoDataURL;
+    cameraCaptured=false;
+  }
+
+  document.getElementById('btn-save-photo').addEventListener('click',()=>{
+    const url=document.getElementById('btn-save-photo').dataset.photoUrl;
+    if(!url)return;
+    const a=document.createElement('a'); a.href=url;
+    a.download=`looi_photo_${Date.now()}.jpg`; a.click();
+    document.getElementById('photo-modal').classList.remove('open');
+  });
+  document.getElementById('btn-discard-photo').addEventListener('click',()=>{
+    document.getElementById('photo-modal').classList.remove('open');
+    document.getElementById('photo-preview').src='';
+  });
+
+  // ── SILENT CAPTURE ───────────────────────────────────────
+  async function capturePhotoSilent(){
+    try{
+      if(_frontReady&&_frontVideo&&_frontVideo.readyState>=2){
+        const cap=document.createElement('canvas'); cap.width=_frontVideo.videoWidth||640; cap.height=_frontVideo.videoHeight||480;
+        const ctx2=cap.getContext('2d'); ctx2.translate(cap.width,0); ctx2.scale(-1,1); ctx2.drawImage(_frontVideo,0,0);
+        return cap.toDataURL('image/jpeg',0.85);
+      }
+      const ok=await startFrontCamera();
+      if(ok&&_frontVideo&&_frontVideo.readyState>=2){
+        const cap=document.createElement('canvas'); cap.width=_frontVideo.videoWidth||640; cap.height=_frontVideo.videoHeight||480;
+        const ctx2=cap.getContext('2d'); ctx2.translate(cap.width,0); ctx2.scale(-1,1); ctx2.drawImage(_frontVideo,0,0);
+        return cap.toDataURL('image/jpeg',0.85);
+      }
+      const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'user',width:{ideal:640},height:{ideal:480}},audio:false});
+      const video=document.createElement('video'); video.srcObject=stream; video.playsInline=true;
+      await video.play(); await new Promise(r=>setTimeout(r,500));
+      const cap=document.createElement('canvas'); cap.width=video.videoWidth||640; cap.height=video.videoHeight||480;
+      cap.getContext('2d').drawImage(video,0,0); stream.getTracks().forEach(t=>t.stop());
+      return cap.toDataURL('image/jpeg',0.85);
+    }catch(err){console.warn('Silent capture failed:',err.message);return null;}
+  }
+
+  // ── ENVIRONMENT CAPTURE ──────────────────────────────────
+  async function captureEnvironmentPhoto(){
+    stopFrontCamera();
+    try{
+      const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'},width:{ideal:640},height:{ideal:480}},audio:false});
+      const video=document.createElement('video'); video.srcObject=stream; video.playsInline=true;
+      await video.play(); await new Promise(r=>setTimeout(r,600));
+      const cap=document.createElement('canvas'); cap.width=video.videoWidth||640; cap.height=video.videoHeight||480;
+      cap.getContext('2d').drawImage(video,0,0); stream.getTracks().forEach(t=>t.stop());
+      return cap.toDataURL('image/jpeg',0.85);
+    }catch(err){
+      console.warn('[Nav] env camera failed, using cold front capture:',err.message);
+      try{
+        const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'user',width:{ideal:640},height:{ideal:480}},audio:false});
+        const video=document.createElement('video'); video.srcObject=stream; video.playsInline=true;
+        await video.play(); await new Promise(r=>setTimeout(r,500));
+        const cap=document.createElement('canvas'); cap.width=video.videoWidth||640; cap.height=video.videoHeight||480;
+        cap.getContext('2d').drawImage(video,0,0); stream.getTracks().forEach(t=>t.stop());
+        return cap.toDataURL('image/jpeg',0.85);
+      }catch(e2){console.warn('[Nav] front fallback also failed:',e2.message);return null;}
+    }
+  }
+
+  // ── NAVIGATE TO TARGET ───────────────────────────────────
+  async function navigateToTarget(target,toolCallId){
+    const MAX_SCANS=6; let found=false;
+    robotState='THINKING'; currentExpression='SCANNING';
+    sendBLECommand('LED_CYAN'); stopLiveFrameStream();
+    for(let attempt=0;attempt<MAX_SCANS;attempt++){
+      showTranscript(`🔍 Scanning for "${target}"… (${attempt+1}/${MAX_SCANS})`);
+      const photo=await captureEnvironmentPhoto();
+      if(!photo){showError('Camera unavailable for navigation');break;}
+      let direction='NOTFOUND';
+      try{
+        const navRes=await fetch('/api/vision/navigate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({image:photo,target})});
+        if(navRes.ok){const data=await navRes.json();direction=data.direction||'NOTFOUND';}
+      }catch(err){console.warn('[Nav] API failed:',err.message);}
+      console.log(`[Nav] scan ${attempt+1}: target="${target}" direction=${direction}`);
+      if(direction!=='NOTFOUND'){
+        found=true; showTranscript(`📍 Found "${target}" — ${direction}. Moving!`);
+        sendDirectionalMove(direction==='CENTER'?'FORWARD':direction);
+        await new Promise(r=>setTimeout(r,direction==='CENTER'?900:1400));
+        currentExpression='HAPPY'; sendBLECommand('LED_GREEN'); break;
+      }
+      if(attempt<MAX_SCANS-1){
+        showTranscript(`🔄 Not found yet, rotating… (${attempt+1}/${MAX_SCANS-1})`);
+        sendDirectionalMove('RIGHT'); await new Promise(r=>setTimeout(r,1100));
+      }
+    }
+    if(!found){showTranscript(`❓ Can't find "${target}" nearby`);currentExpression='SAD';}
+    if(geminiWs?.readyState===WebSocket.OPEN){
+      geminiWs.send(JSON.stringify({navigateResult:found?`Successfully arrived at the ${target}`:`I looked around but couldn't find the ${target}. Can you point me toward it?`,toolCallId}));
+    }
+     startFrontCamera().catch(()=>{});
+    setTimeout(()=>{robotState='IDLE';if(!found)currentExpression='IDLE';sendBLECommand('LED_OFF');},1500);
+  }
+
+  // ── KEEP RENDER ALIVE ─────────────────────────────────────
+  setInterval(()=>fetch('/health').catch(()=>{}),4*60*1000);
+
+  // ── MEDIA PLAYERS ─────────────────────────────────────────
+  let musicAudio=null, musicPlaying=false, isMediaPlaying=false;
+  let geminiProc=null, micSource=null, micRawSource=null, micInputNode=null, _micGen=0;
+
+  function enterMediaMode(){
+    console.log('[Audio] → media mode'); _micGen++;
+    if(typeof playbackGeneration!=='undefined'){
+      playbackGeneration++; geminiNextStart=0;
+      if(Array.isArray(activeAudioSources)){activeAudioSources.forEach(s=>{try{s.stop();}catch{}});activeAudioSources=[];}
+    }
+    if(typeof robotState!=='undefined'&&robotState==='SPEAKING'){robotState='IDLE';currentExpression='IDLE';}
+    if('audioSession' in navigator){try{navigator.audioSession.type='playback';}catch(_){}}
+    if(micStream){micStream.getTracks().forEach(t=>t.stop());micStream=null;}
+    if(audioCtx&&audioCtx.state==='running')audioCtx.suspend().catch(()=>{});
+  }
+  function enterVoiceMode(){
+    console.log('[Audio] → voice mode');
+    if('audioSession' in navigator){try{navigator.audioSession.type='playback';}catch(_){}}
+    if(audioCtx&&audioCtx.state==='suspended')audioCtx.resume().catch(()=>{});
+    if(!micStream&&audioCtx&&geminiProc){
+      const gen=_micGen;
+      navigator.mediaDevices.getUserMedia({audio:{
+        echoCancellation:true,
+        noiseSuppression:true,
+        autoGainControl:true,
+        channelCount:{ideal:1},
+        sampleRate:{ideal:48000},
+        sampleSize:{ideal:16}
+      }})
+      .then(stream=>{
+        if(gen!==_micGen){stream.getTracks().forEach(t=>t.stop());return;}
+        micStream=stream;
+        if(micSource){try{micSource.disconnect();}catch{}}
+        micSource=buildMicInput(micStream);
+        if(geminiProc)micSource.connect(geminiProc);
+        console.log('[Audio] mic reconnected',micStream.getAudioTracks()[0]?.getSettings?.());
+      }).catch(e=>console.warn('[Audio] mic restart failed:',e.message));
+    }
+  }
+  function _clearMusicAudio(){if(musicAudio){musicAudio.pause();musicAudio.src='';musicAudio=null;}musicPlaying=false;if(currentExpression==='MUSIC')currentExpression='IDLE';}
+  function _clearVideoPlayer(){
+    const modal=document.getElementById('video-modal'),frame=document.getElementById('video-frame'),tiktokVid=document.getElementById('tiktok-video');
+    if(frame){frame.src='about:blank';frame.style.aspectRatio='';frame.style.width='';frame.style.maxHeight='';frame.style.display='block';}
+    if(tiktokVid){tiktokVid.pause();tiktokVid.removeAttribute('src');tiktokVid.load();tiktokVid.style.display='none';}
+    if(modal)modal.classList.remove('open'); musicPlaying=false;
+    if(currentExpression==='MUSIC')currentExpression='IDLE';
+  }
+  function playMusicUrl(title,url){
+    _clearMusicAudio(); isMediaPlaying=true; enterMediaMode();
+    musicAudio=new Audio(url); musicAudio.playsInline=true; musicAudio.preload='auto';
+    musicAudio.onended=()=>{_clearMusicAudio();enterVoiceMode();setTimeout(()=>{isMediaPlaying=false;},1500);};
+    musicAudio.onerror=()=>{console.warn('Music audio error',musicAudio?.error?.code);showError('Music playback error');_clearMusicAudio();enterVoiceMode();setTimeout(()=>{isMediaPlaying=false;},1500);};
+    musicAudio.play().catch(err=>{showError('Music play: '+err.message);_clearMusicAudio();enterVoiceMode();setTimeout(()=>{isMediaPlaying=false;},1500);});
+    musicPlaying=true; showTranscript('🎵 '+title); currentExpression='MUSIC';
+  }
+  function stopMusic(){_clearMusicAudio();enterVoiceMode();}
+  function youtubeId(url){try{const p=new URL(url);if(p.hostname.includes('youtu.be'))return p.pathname.slice(1);return p.searchParams.get('v')||p.pathname.split('/').pop();}catch(_){return null;}}
+  function playVideoUrl(title,url,provider='youtube'){
+    _clearMusicAudio(); enterMediaMode();
+    const modal=document.getElementById('video-modal'),frame=document.getElementById('video-frame'),tiktokVideo=document.getElementById('tiktok-video'),label=document.getElementById('video-title');
+    if(!modal||!frame||!tiktokVideo){showError('Video player not ready');enterVoiceMode();return;}
+    const isShortVideo=provider==='tiktok'||provider==='shoti';
+    if(isShortVideo){
+      frame.src='about:blank'; frame.style.display='none'; tiktokVideo.style.display='block';
+      tiktokVideo.onended=()=>stopVideo();
+      tiktokVideo.onerror=()=>{
+        const fallbackSrc='/api/video/download?url='+encodeURIComponent(url);
+        if(tiktokVideo.src!==fallbackSrc){
+          tiktokVideo.onerror=()=>{showError('Video unavailable — try another');stopVideo();};
+          tiktokVideo.src=fallbackSrc; tiktokVideo.load();
+          tiktokVideo.play().catch(()=>{showError('Video unavailable — try another');stopVideo();});
+        }else{showError('Video unavailable — try another');stopVideo();}
+      };
+      tiktokVideo.src=url; tiktokVideo.load(); tiktokVideo.play().catch(err=>console.warn('TikTok play() rejected:',err.message));
+    }else{
+      const id=youtubeId(url); if(!id){showError('Video URL is not valid');enterVoiceMode();return;}
+      tiktokVideo.pause(); tiktokVideo.removeAttribute('src'); tiktokVideo.load(); tiktokVideo.style.display='none';
+      frame.style.display='block'; frame.src='https://www.youtube.com/embed/'+encodeURIComponent(id)+'?autoplay=1&playsinline=1&rel=0';
+    }
+    if(label)label.textContent=title||'Playing video';
+    modal.classList.add('open'); musicPlaying=true; isMediaPlaying=true;
+    currentExpression='MUSIC'; showTranscript('🎬 '+(title||'Playing video'));
+  }
+  function stopVideo(){_clearVideoPlayer();setTimeout(()=>{isMediaPlaying=false;},1500);enterVoiceMode();}
+  document.getElementById('video-stop').addEventListener('click',stopVideo);
+
+  // ── TRANSCRIPT / ERROR UI ─────────────────────────────────
+  let _transcriptTimer=null;
+  function showTranscript(text){
+    const el=document.getElementById('transcript-bar'); el.textContent=text;
+    el.classList.add('visible'); clearTimeout(_transcriptTimer);
+    _transcriptTimer=setTimeout(()=>el.classList.remove('visible'),5000);
+  }
+  let _errorTimer=null;
+  function showError(msg){
+    const el=document.getElementById('error-toast'); el.textContent='⚠ '+msg;
+    el.classList.add('visible'); clearTimeout(_errorTimer);
+    _errorTimer=setTimeout(()=>el.classList.remove('visible'),4000);
+  }
+
+  // ── BLE ───────────────────────────────────────────────────
+  let bleDevice,bleCharacteristic;
+  const SERVICE_UUID="4fafc201-1fb5-459e-8fcc-c5c9c331914b";
+  const CHARACTERISTIC_UUID="beb5483e-36e1-4688-b7f5-ea07361b26a8";
+  const bleNameInput=document.getElementById('ble-name-input');
+  const savedBleName=localStorage.getItem('looi_ble_name');
+  if(savedBleName)bleNameInput.value=savedBleName;
+  bleNameInput.addEventListener('change',()=>localStorage.setItem('looi_ble_name',bleNameInput.value.trim()));
+
+  let audioCtx,analyser,micStream;
+  let connectedSoundPlayed=false;
+  const connectedAudio=new Audio('/sound/connected.mp3');
+  connectedAudio.preload='auto';
+  connectedAudio.volume=0.78;
+
+  function playConnectedSound(){
+    if(connectedSoundPlayed)return;
+    connectedSoundPlayed=true;
+    try{
+      connectedAudio.currentTime=0;
+      connectedAudio.play().catch(err=>console.warn('[Audio] connected sound blocked:',err.message));
+    }catch(err){console.warn('[Audio] connected sound error:',err);}
+  }
+
+  function playSearchSfx(phase){
+    if(!audioCtx)return;
+    try{
+      const now=audioCtx.currentTime;
+      const osc=audioCtx.createOscillator(), gain=audioCtx.createGain();
+      osc.type=phase==='start'?'sine':'triangle';
+      if(phase==='start'){
+        osc.frequency.setValueAtTime(520,now);
+        osc.frequency.exponentialRampToValueAtTime(760,now+0.13);
+      }else{
+        osc.frequency.setValueAtTime(760,now);
+        osc.frequency.exponentialRampToValueAtTime(1040,now+0.16);
+      }
+      gain.gain.setValueAtTime(0.0001,now);
+      gain.gain.exponentialRampToValueAtTime(0.055,now+0.018);
+      gain.gain.exponentialRampToValueAtTime(0.0001,now+(phase==='start'?0.18:0.24));
+      osc.connect(gain); gain.connect(audioCtx.destination);
+      osc.start(now); osc.stop(now+(phase==='start'?0.2:0.26));
+    }catch(err){console.warn('[Audio] search sound error:',err);}
+  }
+
+  function setSearchVisual(active){
+    document.getElementById('search-status')?.classList.toggle('visible',active);
+    document.getElementById('faceCanvas')?.classList.toggle('is-searching',active);
+  }
+
+  document.getElementById('connect-btn').addEventListener('click',async()=>{
+    localStorage.setItem('looi_ble_name',bleNameInput.value.trim());
+    document.getElementById('start-overlay').style.display='none';
+    await initBLE(); await initAudio();
+    requestAnimationFrame(renderLoop);
+    ensureWarmCamera().catch(()=>{});
+    _faceShowWake(); // Wake animation on startup
+  });
+
+  let _lastTap=0;
+  document.getElementById('robot-screen').addEventListener('touchend',e=>{
+    const now=Date.now();
+    if(now-_lastTap<320){e.preventDefault();toggleFS();}
+    _lastTap=now;
+  },{passive:false});
+  document.getElementById('robot-screen').addEventListener('dblclick',toggleFS);
+  function toggleFS(){
+    if(!document.fullscreenElement)document.documentElement.requestFullscreen({navigationUI:'hide'}).catch(()=>{});
+    else document.exitFullscreen().catch(()=>{});
+  }
+
+  // Warm camera for fast first capture
+  async function ensureWarmCamera(){await startFrontCamera();}
+
+  async function initBLE(){
+    const deviceName=(localStorage.getItem('looi_ble_name')||'LOOI_ESP32_ROBOT').trim();
+    try{
+      bleDevice=await navigator.bluetooth.requestDevice({acceptAllDevices:true,optionalServices:[SERVICE_UUID]});
+      const server=await bleDevice.gatt.connect();
+      const service=await server.getPrimaryService(SERVICE_UUID);
+      bleCharacteristic=await service.getCharacteristic(CHARACTERISTIC_UUID);
+      const connectedName=bleDevice.name||deviceName;
+      console.log(`BLE connected: ${connectedName}`);
+      // Play this while the browser still has the user's Connect gesture,
+      // instead of waiting for the later Gemini setup message.
+      playConnectedSound();
+      showTranscript(`🔵 BLE connected: ${connectedName}`);
+    }catch(err){
+      console.warn('BLE skipped/failed:',err.message);
+      if(!err.message?.includes('cancelled')&&!err.message?.includes('chosen')){
+        showError(`BLE: ${err.message||'not connected'}`);
+      }
+    }
+  }
+
+  let bleWriteQueue=Promise.resolve();
+  function sendDirectionalMove(cmd, speed){
+    cmd=String(cmd||'').trim().toUpperCase();
+    if(!cmd||cmd==='NONE')return;
+    const speedSuffix = (typeof speed==='number' && speed>=0 && speed<=255) ? ':'+Math.round(speed) : '';
+    const fullCmd = cmd + speedSuffix;
+    if(cmd==='LEFT'||cmd==='RIGHT'){sendBLECommand(fullCmd);setTimeout(()=>sendBLECommand('FORWARD'+speedSuffix),550);}
+    else sendBLECommand(fullCmd);
+  }
+  function sendBLECommand(cmd){
+    cmd=String(cmd||'').trim().toUpperCase();
+    if(!bleCharacteristic||!cmd||cmd==='NONE')return Promise.resolve(false);
+    const bytes=new TextEncoder().encode(cmd);
+    bleWriteQueue=bleWriteQueue.catch(()=>false).then(async()=>{
+      if(!bleCharacteristic)return false;
+      try{
+        if(typeof bleCharacteristic.writeValueWithResponse==='function')await bleCharacteristic.writeValueWithResponse(bytes);
+        else await bleCharacteristic.writeValue(bytes);
+        console.log('BLE command sent:',cmd); return true;
+      }catch(err){console.warn('BLE command failed:',cmd,err);return false;}
+    });
+    return bleWriteQueue;
+  }
+
+  // ── WAVEFORM UI ───────────────────────────────────────────
+  const NUM_BARS=7;
+  // Bar shape from Mochi/expo-app — symmetric wave silhouette
+  const BAR_SHAPE=[0.55,0.85,1.0,0.85,1.0,0.75,0.55];
+  const waveformBars=Array.from({length:NUM_BARS},(_,i)=>document.getElementById('wb'+(i+1)));
+  let smoothedVolume=0, barHeights=new Array(NUM_BARS).fill(3), voiceGain=null;
+
+  function getTTSVolume(){
+    if(!ttsAnalyser)return 0;
+    const buf=new Float32Array(ttsAnalyser.fftSize);
+    ttsAnalyser.getFloatTimeDomainData(buf);
+    let sum=0; for(let i=0;i<buf.length;i++)sum+=buf[i]*buf[i];
+    return Math.sqrt(sum/buf.length);
+  }
+
+  async function initAudio(){
+    if('audioSession' in navigator){try{navigator.audioSession.type='playback';}catch(_){}}
+    // Let the browser use its hardware echo cancellation, noise suppression,
+    // and automatic gain control before our speech cleanup stage.
+    micStream=await navigator.mediaDevices.getUserMedia({audio:{
+      echoCancellation:true,
+      noiseSuppression:true,
+      autoGainControl:true,
+      channelCount:{ideal:1},
+      sampleRate:{ideal:48000},
+      sampleSize:{ideal:16}
+    }});
+    audioCtx=new(window.AudioContext||window.webkitAudioContext)({latencyHint:'interactive'});
+    try{await audioCtx.resume();}catch(_){}
+    if('audioSession' in navigator){try{navigator.audioSession.type='playback';}catch(_){}}
+    voiceGain=audioCtx.createGain(); voiceGain.gain.value=1.0;
+    // Voice EQ: roll off sub-bass rumble, boost speech presence band, gentle treble air
+    const highPass=audioCtx.createBiquadFilter(); highPass.type='highpass'; highPass.frequency.value=100; highPass.Q.value=0.5;
+    const presence=audioCtx.createBiquadFilter(); presence.type='peaking'; presence.frequency.value=3000; presence.Q.value=0.9; presence.gain.value=4;
+    const airShelf=audioCtx.createBiquadFilter(); airShelf.type='highshelf'; airShelf.frequency.value=8000; airShelf.gain.value=2;
+    // Compressor: transparent, fast attack to catch consonants, slow release to avoid pumping
+    const voiceCompressor=audioCtx.createDynamicsCompressor();
+    voiceCompressor.threshold.value=-24; voiceCompressor.knee.value=10; voiceCompressor.ratio.value=4;
+    voiceCompressor.attack.value=0.002; voiceCompressor.release.value=0.15;
+    voiceGain.connect(highPass); highPass.connect(presence); presence.connect(airShelf); airShelf.connect(voiceCompressor); voiceCompressor.connect(audioCtx.destination);
+    ttsAnalyser=audioCtx.createAnalyser(); ttsAnalyser.fftSize=256; ttsAnalyser.smoothingTimeConstant=0.25;
+    presence.connect(ttsAnalyser);
+    analyser=audioCtx.createAnalyser(); analyser.fftSize=256; analyser.smoothingTimeConstant=0.5;
+    const source=buildMicInput(micStream);
+    console.log('[Audio] mic ready',micStream.getAudioTracks()[0]?.getSettings?.());
+    initGeminiLive(source);
+  }
+
+  function buildMicInput(stream){
+    if(micRawSource){try{micRawSource.disconnect();}catch(_){}}
+    micRawSource=audioCtx.createMediaStreamSource(stream);
+
+    // Remove handling/air-conditioner rumble and gently level speech before
+    // the 16 kHz Gemini stream. This affects only mic input, not AI playback.
+    const highPass=audioCtx.createBiquadFilter();
+    highPass.type='highpass'; highPass.frequency.value=85; highPass.Q.value=0.55;
+    const speechCompressor=audioCtx.createDynamicsCompressor();
+    speechCompressor.threshold.value=-26; speechCompressor.knee.value=12;
+    speechCompressor.ratio.value=2.5; speechCompressor.attack.value=0.004;
+    speechCompressor.release.value=0.18;
+    const inputGain=audioCtx.createGain();
+    inputGain.gain.value=1.08;
+    micRawSource.connect(highPass);
+    highPass.connect(speechCompressor);
+    speechCompressor.connect(inputGain);
+    inputGain.connect(analyser);
+    micInputNode=inputGain;
+    return micInputNode;
+  }
+
+  function getRMS(){const buf=new Float32Array(analyser.fftSize);analyser.getFloatTimeDomainData(buf);let sum=0;for(let i=0;i<buf.length;i++)sum+=buf[i]*buf[i];return Math.sqrt(sum/buf.length);}
+
+  // ── GEMINI LIVE ───────────────────────────────────────────
+  let geminiWs=null, geminiNextStart=0, playbackGeneration=0, activeAudioSources=[], searchPending=false, pendingModelParts=[];
+
+  function interruptGeminiPlayback(nextState='THINKING'){
+    playbackGeneration++;
+    geminiNextStart=0;
+    activeAudioSources.forEach(s=>{try{s.stop();}catch{}});
+    activeAudioSources=[];
+    robotState=nextState;
+    currentExpression='IDLE';
+  }
+
+  function connectGeminiLive(){
+    const proto=location.protocol==='https:'?'wss':'ws';
+    geminiWs=new WebSocket(`${proto}://${location.host}/ws/gemini`);
+    geminiWs.onopen=()=>console.log('[GeminiLive] connected');
+    geminiWs.onmessage=async({data})=>{
+      let msg; try{msg=JSON.parse(data);}catch{return;}
+      if(msg.setupComplete!==undefined){
+        playConnectedSound();
+        showTranscript('🔴 LOOI is ready — say something!');
+        return;
+      }
+      if(msg.error){showError('Gemini: '+msg.error);robotState='IDLE';return;}
+      if(msg.needPhoto){
+        robotState='THINKING'; currentExpression='CAMERA';
+        showTranscript('📸 Taking a look...');
+        const photo=await capturePhotoSilent();
+        if(photo&&geminiWs?.readyState===WebSocket.OPEN)
+          geminiWs.send(JSON.stringify({photoData:photo.replace(/^data:image\/\w+;base64,/,''),toolCallId:msg.toolCallId}));
+        else if(geminiWs?.readyState===WebSocket.OPEN)
+          geminiWs.send(JSON.stringify({photoData:'',toolCallId:msg.toolCallId}));
+        return;
+      }
+      if(msg.needNavigate){await navigateToTarget(msg.target,msg.toolCallId);return;}
+      if(msg.robotAction){
+        const{face,move,led,speed}=msg.robotAction;
+        if(face){currentExpression=face;if(face==='CAMERA')triggerCameraCapture();}
+        sendDirectionalMove(move||'NONE', speed);
+        if(led&&led!=='NONE')sendBLECommand(led); return;
+      }
+      if(msg.toolCancelled){
+        searchPending=false;
+        setSearchVisual(false);
+        interruptGeminiPlayback('LISTENING'); return;
+      }
+      if(msg.searchStarted){
+        searchPending=true;
+        pendingModelParts=[];
+        setSearchVisual(true);
+        playSearchSfx('start');
+        interruptGeminiPlayback('THINKING');
+        showTranscript(msg.searchStarted.message||'Sige, hahanapin ko muna…');
+        return;
+      }
+      if(msg.searchFinished){
+        searchPending=false;
+        setSearchVisual(false);
+        playSearchSfx('finish');
+        // Any audio buffered before the search result is provisional speech,
+        // not a verified answer. Discard it instead of playing a hallucinated
+        // preamble after the search completes.
+        pendingModelParts=[];
+        robotState='THINKING';
+        showTranscript('Nakuha ko na ang resulta, sasabihin ko na…');
+        return;
+      }
+      if(msg.mediaAction){
+        const labels={music:'🎵 Searching music…',video:'🎬 Searching video…',tiktok:'📱 Searching TikTok…',shoti:'🎀 Fetching shoti…'};
+        showTranscript(labels[msg.mediaAction.type]||'🔍 Loading…'); return;
+      }
+      if(msg.mediaReady){
+        const{type,url,title,provider}=msg.mediaReady;
+        if(!url){showError('Media not found');return;}
+        if(type==='music')playMusicUrl(title||'Music',url);
+        else playVideoUrl(title||'Video',url,provider||type); return;
+      }
+      const sc=msg.serverContent; if(!sc)return;
+      if(sc.inputTranscription?.text){
+        const t=sc.inputTranscription.text.trim();
+        if(t){console.log('[User]',t);robotState='THINKING';}
+      }
+      if(sc.modelTurn?.parts){
+        // Hold model output during the search handoff. This prevents late
+        // preamble audio from continuing, while preserving a final answer
+        // that arrives just before the searchFinished marker.
+        if(searchPending){
+          pendingModelParts.push(...sc.modelTurn.parts);
+          if(pendingModelParts.length>120)pendingModelParts.splice(0,pendingModelParts.length-120);
+          return;
+        }
+        playModelParts(sc.modelTurn.parts);
+      }
+      if(sc.interrupted){
+        searchPending=false;
+        setSearchVisual(false);
+        interruptGeminiPlayback('LISTENING');
+      }
+      if(sc.turnComplete){
+        if(searchPending)return;
+        const currentGen=playbackGeneration,deadline=Date.now()+30000;
+        (function waitForAudioEnd(){
+          if(playbackGeneration!==currentGen)return;
+          if(Date.now()>deadline){robotState='IDLE';return;}
+          if(geminiNextStart>0&&audioCtx.currentTime<geminiNextStart-0.05){setTimeout(waitForAudioEnd,80);return;}
+          robotState='IDLE';
+        })();
+      }
+    };
+    geminiWs.onclose=({code,reason})=>{
+      console.log('[GeminiLive] closed',code,reason?.toString?.()??'');
+      setSearchVisual(false);
+      robotState='IDLE'; geminiWs=null; setTimeout(connectGeminiLive,3000);
+    };
+    geminiWs.onerror=e=>console.error('[GeminiLive] error',e);
+  }
+
+  function playModelParts(parts){
+    for(const part of parts){
+      if(part.inlineData?.mimeType?.startsWith('audio/pcm')){
+        robotState='SPEAKING';
+        _playGeminiChunk(part.inlineData.data,playbackGeneration);
+      }
+      if(typeof part.text==='string')console.log('[LOOI]',part.text);
+    }
+  }
+
+  function _playGeminiChunk(b64,gen){
+    if(gen!==playbackGeneration)return;
+    const raw=atob(b64),i16=new Int16Array(raw.length/2);
+    for(let i=0;i<i16.length;i++)i16[i]=(raw.charCodeAt(i*2)&0xff)|((raw.charCodeAt(i*2+1)&0xff)<<8);
+    const f32=new Float32Array(i16.length);
+    for(let i=0;i<i16.length;i++)f32[i]=i16[i]/32768.0;
+    const buf=audioCtx.createBuffer(1,f32.length,24000);
+    buf.copyToChannel(f32,0);
+    const src=audioCtx.createBufferSource(); src.buffer=buf;
+    src.connect(voiceGain||audioCtx.destination);
+    const now=audioCtx.currentTime,start=Math.max(now+0.01,geminiNextStart);
+    src.start(start); geminiNextStart=start+buf.duration;
+    activeAudioSources.push(src);
+    src.onended=()=>{
+      const idx=activeAudioSources.indexOf(src);
+      if(idx!==-1)activeAudioSources.splice(idx,1);
+      if(geminiNextStart>0&&audioCtx.currentTime>=geminiNextStart-0.08&&robotState==='SPEAKING'){
+        robotState='IDLE';
+      }
+    };
+  }
+
+  function initGeminiLive(source){
+    micSource=source;
+    const SR=audioCtx.sampleRate, TR=16000;
+    // Use 2048-frame buffer for smoother resampling at 48 kHz → 16 kHz
+    // 1024 frames keeps the browser-side capture path responsive while still
+    // leaving enough room for stable PCM resampling on mobile browsers.
+    const proc=audioCtx.createScriptProcessor(1024,1,1);
+    geminiProc=proc;
+    const sink=audioCtx.createMediaStreamDestination();
+    source.connect(proc); proc.connect(sink);
+
+    // Visual LISTENING threshold — purely for UI feedback, no signals sent to Gemini
+    const LISTEN_THRESHOLD   = 0.018; // RMS to show LISTENING state
+    const LISTEN_END_FRAMES  = 10;    // silent frames before reverting to IDLE (~230 ms)
+    const ECHO_TAIL_MS       = 350;   // brief mute after AI stops so speaker echo decays
+
+    let noiseFloor = 0.008;
+    let prevAiActive = false, aiEndedAt = 0;
+    let listenSilenceFrames = 0;
+
+    proc.onaudioprocess=(e)=>{
+      const input=e.inputBuffer.getChannelData(0);
+      let sum=0; for(let i=0;i<input.length;i++)sum+=input[i]*input[i];
+      const rms=Math.sqrt(sum/input.length);
+      smoothedVolume=smoothedVolume*0.7+rms*0.3;
+
+      const isGeminiSpeaking=audioCtx.currentTime<geminiNextStart, now=Date.now();
+      const aiActive=isGeminiSpeaking||robotState==='SPEAKING';
+
+      // Track AI on/off transitions for echo suppression
+      if(aiActive&&!prevAiActive){ listenSilenceFrames=0; }
+      if(!aiActive&&prevAiActive){ aiEndedAt=now; }
+      prevAiActive=aiActive;
+
+      // Noise floor — slow-track ambient level while AI is quiet
+      if(!aiActive) noiseFloor=Math.max(0.004, noiseFloor*0.998+smoothedVolume*0.002);
+
+      // ── Visual LISTENING indicator (UI only, no Gemini signals) ──
+      if(!aiActive){
+        const effectiveListen=Math.max(LISTEN_THRESHOLD, noiseFloor*2.0);
+        if(rms>effectiveListen){
+          listenSilenceFrames=0;
+          if(robotState==='IDLE')robotState='LISTENING';
+        } else if(robotState==='LISTENING'){
+          listenSilenceFrames++;
+          if(listenSilenceFrames>=LISTEN_END_FRAMES){ robotState='IDLE'; listenSilenceFrames=0; }
+        }
+      }
+
+      if(!geminiWs||geminiWs.readyState!==WebSocket.OPEN)return;
+
+      // Mute mic to Gemini while AI is speaking to prevent feedback loop
+      if(aiActive)return;
+
+      // Brief echo tail after AI finishes so room decay doesn't confuse Gemini VAD
+      if(!aiActive&&aiEndedAt>0&&(now-aiEndedAt)<ECHO_TAIL_MS)return;
+
+      // Downsample to 16 kHz PCM with linear interpolation
+      const ratio=SR/TR, outLen=Math.floor(input.length/ratio);
+      const pcm=new Int16Array(outLen);
+      for(let i=0;i<outLen;i++){
+        const pos=i*ratio, idx=Math.floor(pos), frac=pos-idx;
+        const s=Math.max(-1,Math.min(1,(input[idx]||0)+frac*((input[idx+1]||0)-(input[idx]||0))));
+        pcm[i]=s<0?s*0x8000:s*0x7FFF;
+      }
+
+      // Stream clean 16 kHz PCM — Gemini auto-VAD handles speech detection
+      geminiWs.send(pcm.buffer);
+    };
+    connectGeminiLive();
+    console.log('[GeminiLive] audio pipeline ready, sampleRate:',SR,'→ 16 kHz PCM (Gemini auto-VAD)');
+  }
+
+  // ── TTS ANALYSER for mouth animation tracking ─────────────
+  let ttsAnalyser=null;
+
+  // ── MAIN RENDER LOOP (waveform only, face handled by DOM) ─
+  function renderLoop(){
+    updateWaveformUI();
+    requestAnimationFrame(renderLoop);
+  }
+
+  function updateWaveformUI(){
+    const stateText=document.getElementById('state-text');
+    const t=Date.now()*0.004;
+    const connected=geminiWs&&geminiWs.readyState===WebSocket.OPEN;
+    stateText.innerText=musicPlaying?'MUSIC':connected?robotState:'NO SIGNAL';
+    const ttsVol=Math.min(1,getTTSVolume()*22);
+    waveformBars.forEach((b,i)=>{
+      let h,color;
+      const shape=BAR_SHAPE[i];
+      if(musicPlaying){
+        h=5+18*Math.abs(Math.sin(t*5+i*1.1))+8*Math.abs(Math.sin(t*9.3+i*0.6));
+        color='#ffbc00';
+      } else if(robotState==='THINKING'&&connected){
+        // Gentle ripple while Gemini thinks
+        h=3+shape*(3+Math.abs(Math.sin(t*2+i*0.9))*10);
+        color='#00d2ff';
+      } else if(connected&&ttsVol>0.015){
+        // Real audio output — drive bars from ttsAnalyser
+        h=3+ttsVol*30*shape;
+        color='#00d2ff';
+      } else if(connected){
+        // Connected idle — very gentle heartbeat so user knows it's live
+        h=2+shape*(1+Math.abs(Math.sin(t*0.5+i*1.1))*1.5);
+        color='#00d2ff88';
+      } else {
+        // Not connected — flat dim bars
+        h=2+shape*1;
+        color='#1a3344';
+      }
+      barHeights[i]=barHeights[i]*0.55+h*0.45;
+      b.style.height=barHeights[i]+'px'; b.style.background=color;
+    });
+  }
+  </script>
+</body>
+</html>
