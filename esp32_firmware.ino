@@ -195,6 +195,9 @@ void updateServo() {
 // ═══════════════════════════════════════════════════════════════════
 MotorState  motorState = M_STOP;
 unsigned long motorEnd = 0;
+bool aiRoamMode = false;
+unsigned long lastAiCommandAt = 0;
+#define AI_COMMAND_TIMEOUT_MS 1800UL
 
 void rawStop() {
   digitalWrite(MOTOR_A1, LOW); digitalWrite(MOTOR_A2, LOW);
@@ -219,6 +222,12 @@ void drive(MotorState s, int ms) {
 
 void updateMotors() {
   if (motorState != M_STOP && millis() >= motorEnd) {
+    rawStop();
+    motorState = M_STOP;
+  }
+  // If the browser/AI disappears, never keep driving indefinitely.
+  if (aiRoamMode && lastAiCommandAt != 0 &&
+      millis() - lastAiCommandAt > AI_COMMAND_TIMEOUT_MS) {
     rawStop();
     motorState = M_STOP;
   }
@@ -305,6 +314,7 @@ void nextExploreBehavior() {
 }
 
 void updateExploration() {
+  if (aiRoamMode) return;
   if (bleActive()) return;
   if (lookHoldActive()) return;
   if (lookHoldEnd != 0) {
@@ -399,24 +409,65 @@ void processPendingCommand() {
   String value = normalizeCommand(rawValue);
   Serial.print("[BLE] CMD raw: "); Serial.println(rawValue);
   Serial.print("[BLE] CMD normalized: "); Serial.println(value);
+  // Commands may be "FORWARD:100:600" (direction:speed:duration).
+  // The current motor driver is full-power digital; speed is accepted for
+  // protocol compatibility while duration is enforced for short AI steps.
+  int firstSep = value.indexOf(':');
+  String baseCommand = firstSep >= 0 ? value.substring(0, firstSep) : value;
+  int secondSep = firstSep >= 0 ? value.indexOf(':', firstSep + 1) : -1;
+  int requestedDuration = secondSep >= 0 ? value.substring(secondSep + 1).toInt() : 0;
+  requestedDuration = constrain(requestedDuration, 0, 1500);
+  value = baseCommand;
   bleOverrideEnd = millis() + 3000;
+
+  if (value == "ROAM_ON") {
+    aiRoamMode = true;
+    lastAiCommandAt = millis();
+    rawStop();
+    motorState = M_STOP;
+    motorEnd = 0;
+    cancelLookHold();
+    Serial.println("[ROAM] AI control enabled");
+    return;
+  }
+  if (value == "ROAM_OFF") {
+    aiRoamMode = false;
+    lastAiCommandAt = 0;
+    rawStop();
+    motorState = M_STOP;
+    motorEnd = 0;
+    Serial.println("[ROAM] AI control disabled");
+    return;
+  }
+  if (value == "STOP") {
+    lastAiCommandAt = aiRoamMode ? millis() : 0;
+    rawStop();
+    motorState = M_STOP;
+    motorEnd = 0;
+    Serial.println("[BLE] STOP");
+    return;
+  }
 
   // ── Movement commands ──
   if      (value == "FORWARD") {
     cancelLookHold();
-    drive(M_FORWARD, 800);
+    lastAiCommandAt = aiRoamMode ? millis() : lastAiCommandAt;
+    drive(M_FORWARD, requestedDuration > 0 ? requestedDuration : 800);
   }
   else if (value == "BACKWARD") {
     cancelLookHold();
-    drive(M_BACKWARD, 800);
+    lastAiCommandAt = aiRoamMode ? millis() : lastAiCommandAt;
+    drive(M_BACKWARD, requestedDuration > 0 ? requestedDuration : 800);
   }
   else if (value == "LEFT") {
     cancelLookHold();
-    drive(M_LEFT, 400);
+    lastAiCommandAt = aiRoamMode ? millis() : lastAiCommandAt;
+    drive(M_LEFT, requestedDuration > 0 ? requestedDuration : 400);
   }
   else if (value == "RIGHT") {
     cancelLookHold();
-    drive(M_RIGHT, 400);
+    lastAiCommandAt = aiRoamMode ? millis() : lastAiCommandAt;
+    drive(M_RIGHT, requestedDuration > 0 ? requestedDuration : 400);
   }
   else if (value == "LOOK_UP")     holdHeadLook(120, 1.0f);
   else if (value == "LOOK_DOWN")   holdHeadLook(60,  1.0f);
