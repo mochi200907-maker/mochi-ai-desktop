@@ -491,9 +491,33 @@
     #faceCanvas.is-searching .looi-eye__core {
       box-shadow: 0 0 22px rgba(255, 208, 82, 0.58);
     }
+    #faceCanvas.is-face-scanning {
+      --eye-scan: rgba(94, 245, 255, 0.96);
+      --eye-glow: #168fff;
+    }
+    #faceCanvas.is-face-scanning .looi-eye__scan-line {
+      opacity: 1;
+      animation: looiFaceRecognitionScan 900ms cubic-bezier(0.35,0,0.2,1) infinite;
+    }
+    #faceCanvas.is-face-scanning .looi-eye__core {
+      box-shadow: 0 0 18px rgba(94, 245, 255, 0.68), 0 0 42px rgba(22, 143, 255, 0.32);
+    }
+    #faceCanvas.is-face-scanning .looi-eye__glow {
+      opacity: 1;
+      animation: looiFaceRecognitionGlow 900ms ease-in-out infinite alternate;
+    }
     @keyframes looiThinkingScan {
       0%,100% { opacity: 0.3; transform: translate(-50%,-50%) scaleX(0.3); }
       50%      { opacity: 1;   transform: translate(-50%,-50%) scaleX(1);   }
+    }
+    @keyframes looiFaceRecognitionScan {
+      0%   { opacity: 0.25; transform: translate(-50%,-50%) translateY(-28px) scaleX(0.42); }
+      45%  { opacity: 1;    transform: translate(-50%,-50%) translateY(0) scaleX(1); }
+      100% { opacity: 0.25; transform: translate(-50%,-50%) translateY(28px) scaleX(0.42); }
+    }
+    @keyframes looiFaceRecognitionGlow {
+      from { opacity: 0.62; transform: scale(0.96); }
+      to   { opacity: 1;    transform: scale(1.06); }
     }
 
     /* ── BLINK ── */
@@ -834,6 +858,9 @@
       color: #c9f7ff; background: rgba(3,12,25,0.78); border: 1px solid rgba(97,211,255,0.28);
       border-radius: 14px; backdrop-filter: blur(12px); box-shadow: 0 8px 28px rgba(0,0,0,0.25);
     }
+    /* Face recognition runs automatically in the background. Its diagnostics
+       are intentionally not exposed in the robot UI. */
+    #face-identity-control { display: none !important; }
     #face-identity-control .face-control-row { display:flex; align-items:center; justify-content:space-between; gap:8px; }
     #face-identity-control .face-label { font-size:10px; letter-spacing:1.5px; text-transform:uppercase; color:#8fb6c8; }
     #face-identity-control .face-name { margin-top:3px; font-size:14px; font-weight:750; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
@@ -961,9 +988,9 @@
           <div class="face-label">Face identity</div>
           <div class="face-name" id="face-identity-name">Guest</div>
         </div>
-        <button id="face-scan-toggle" type="button" aria-pressed="false">OFF</button>
+        <button id="face-scan-toggle" type="button" aria-pressed="true">ON</button>
       </div>
-      <span id="face-identity-status">Scanning is off</span>
+      <span id="face-identity-status">Scanning is always on</span>
     </div>
     <div id="transcript-bar"></div>
     <div id="error-toast"></div>
@@ -1519,6 +1546,7 @@
   let faceScanTimer = null;
   let faceScanBusy = false;
   let faceRecognitionEnabled = false;
+  let faceScanSfxLastAt = 0;
   let faceScanCandidate = '';
   let faceScanCandidateStreak = 0;
   let faceScanEmptyStreak = 0;
@@ -1533,6 +1561,34 @@
     const nameEl = document.getElementById('face-identity-name');
     if (statusEl) statusEl.textContent = status;
     if (nameEl) nameEl.textContent = name || 'Guest';
+  }
+
+  function setFaceScanVisual(active) {
+    document.getElementById('faceCanvas')?.classList.toggle('is-face-scanning', Boolean(active));
+    if (active) playFaceScanSfx();
+  }
+
+  function playFaceScanSfx() {
+    if (!audioCtx) return;
+    const now = audioCtx.currentTime;
+    if (now - faceScanSfxLastAt < 0.42) return;
+    faceScanSfxLastAt = now;
+    try {
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(620, now);
+      osc.frequency.exponentialRampToValueAtTime(900, now + 0.12);
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.exponentialRampToValueAtTime(0.035, now + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.18);
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.start(now);
+      osc.stop(now + 0.2);
+    } catch (err) {
+      console.warn('[Audio] face scan sound error:', err.message);
+    }
   }
 
   async function loadFaceModels() {
@@ -1622,6 +1678,8 @@
     robotState = 'THINKING';
     currentExpression = 'SCANNING';
     setFaceIdentityUi('Scanning facial structure…', safeName);
+    faceScanBusy = true;
+    setFaceScanVisual(true);
     try {
       await startFrontCamera();
       const embedding = await captureFaceEmbedding();
@@ -1650,17 +1708,22 @@
       setFaceRecognitionEnabled(true);
       robotState = 'IDLE';
       currentExpression = 'HAPPY';
+      setFaceScanVisual(false);
+      faceScanBusy = false;
     } catch (err) {
       console.warn('[FaceID] registration failed:', err.message);
       currentExpression = 'SAD';
       setFaceIdentityUi('Scan failed — try again');
       showError(err.message || 'Hindi nagtagumpay ang face scan.');
+      setFaceScanVisual(false);
+      faceScanBusy = false;
     }
   }
 
   async function runFaceRecognitionScan() {
     if (!faceRecognitionEnabled || faceScanBusy || !_frontReady || !_frontVideo) return;
     faceScanBusy = true;
+    setFaceScanVisual(true);
     try {
       const embedding = await captureFaceScanEmbedding();
       if (!embedding) {
@@ -1705,6 +1768,82 @@
       if (!String(err.message).includes('Walang mukha')) console.warn('[FaceID] scan failed:', err.message);
     } finally {
       faceScanBusy = false;
+      setFaceScanVisual(false);
+    }
+  }
+
+  function sendFaceToolResponse(toolCallId, name, output) {
+    if (geminiWs?.readyState !== WebSocket.OPEN || !toolCallId) return;
+    geminiWs.send(JSON.stringify({
+      faceToolResponse: { toolCallId, name, output: String(output || '') }
+    }));
+  }
+
+  async function listFaceUsersForAssistant(toolCallId) {
+    try {
+      const response = await fetch('/api/face/list', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ deviceId: FACE_DEVICE_ID }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || !result.ok) throw new Error(result.error || 'Hindi available ang user list.');
+      const users = Array.isArray(result.users) ? result.users : [];
+      const output = users.length
+        ? `Registered face users: ${users.map((user, index) => `${index + 1}. ${user.name}`).join(', ')}.`
+        : 'Walang registered face users sa device na ito.';
+      sendFaceToolResponse(toolCallId, 'list_face_users', output);
+    } catch (err) {
+      sendFaceToolResponse(toolCallId, 'list_face_users', `Hindi ko makuha ang user list: ${err.message}`);
+    }
+  }
+
+  async function clearFaceUserForAssistant(toolCallId, requestedName) {
+    const name = normalizedFaceName(requestedName);
+    if (name.length < 2) {
+      sendFaceToolResponse(toolCallId, 'clear_face_user', 'Kailangan ko ang pangalan ng user na ide-delete.');
+      return;
+    }
+    try {
+      const response = await fetch('/api/face/clear', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ deviceId: FACE_DEVICE_ID, name }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || !result.ok) throw new Error(result.error || 'Hindi na-clear ang user.');
+      if (result.cleared && lastRecognizedFaceName.toLowerCase() === String(result.name).toLowerCase()) {
+        lastRecognizedFaceName = '';
+        if (geminiWs?.readyState === WebSocket.OPEN) {
+          geminiWs.send(JSON.stringify({ recognizedUser: { matched: false, name: '' } }));
+        }
+      }
+      sendFaceToolResponse(
+        toolCallId,
+        'clear_face_user',
+        result.cleared ? `Na-clear na si ${result.name}.` : `Walang registered user na ang pangalan ay ${result.name}.`,
+      );
+    } catch (err) {
+      sendFaceToolResponse(toolCallId, 'clear_face_user', `Hindi ko ma-clear si ${name}: ${err.message}`);
+    }
+  }
+
+  async function clearAllFaceUsersForAssistant(toolCallId) {
+    try {
+      const response = await fetch('/api/face/clear-all', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ deviceId: FACE_DEVICE_ID }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || !result.ok) throw new Error(result.error || 'Hindi na-clear ang users.');
+      lastRecognizedFaceName = '';
+      if (geminiWs?.readyState === WebSocket.OPEN) {
+        geminiWs.send(JSON.stringify({ recognizedUser: { matched: false, name: '' } }));
+      }
+      sendFaceToolResponse(toolCallId, 'clear_all_face_users', `Na-clear ang lahat ng registered users (${result.count || 0}).`);
+    } catch (err) {
+      sendFaceToolResponse(toolCallId, 'clear_all_face_users', `Hindi ko ma-clear lahat ng users: ${err.message}`);
     }
   }
 
@@ -2072,6 +2211,9 @@
     localStorage.setItem('looi_ble_name',bleNameInput.value.trim());
     document.getElementById('start-overlay').style.display='none';
     await initBLE(); await initAudio();
+    // Face recognition is always enabled after the user's camera permission
+    // gesture; there is no frontend toggle for this background feature.
+    await setFaceRecognitionEnabled(true);
     requestAnimationFrame(renderLoop);
     ensureWarmCamera().catch(()=>{});
     _faceShowWake(); // Wake animation on startup
@@ -2233,6 +2375,18 @@
         return;
       }
       if(msg.error){showError('Gemini: '+msg.error);robotState='IDLE';return;}
+      if(msg.faceListRequested){
+        listFaceUsersForAssistant(msg.faceListRequested.toolCallId);
+        return;
+      }
+      if(msg.faceClearRequested){
+        clearFaceUserForAssistant(msg.faceClearRequested.toolCallId, msg.faceClearRequested.name);
+        return;
+      }
+      if(msg.faceClearAllRequested){
+        clearAllFaceUsersForAssistant(msg.faceClearAllRequested.toolCallId);
+        return;
+      }
       if(msg.faceRegistrationRequested){
         pendingFaceToolCallId=msg.faceRegistrationRequested.toolCallId||null;
         openFaceRegistrationPrompt(msg.faceRegistrationRequested.name||'');
