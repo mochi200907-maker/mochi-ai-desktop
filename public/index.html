@@ -1519,6 +1519,11 @@
   let faceScanTimer = null;
   let faceScanBusy = false;
   let faceRecognitionEnabled = false;
+  let faceScanCandidate = '';
+  let faceScanCandidateStreak = 0;
+  let faceScanEmptyStreak = 0;
+  const FACE_SCAN_INTERVAL_MS = 1100;
+  const FACE_SCAN_CONFIRMATIONS = 2;
   let awaitingFaceRegistrationName = false;
   let pendingFaceToolCallId = null;
   let lastRecognizedFaceName = '';
@@ -1573,6 +1578,18 @@
     return embedding.map(value => value / magnitude);
   }
 
+  async function captureFaceScanEmbedding() {
+    if (!_frontReady || !_frontVideo || _frontVideo.readyState < 2) {
+      if (!await startFrontCamera()) throw new Error('Camera unavailable');
+    }
+    const api = await loadFaceModels();
+    const detection = await api.detectSingleFace(
+      _frontVideo,
+      new api.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.5 }),
+    ).withFaceLandmarks().withFaceDescriptor();
+    return detection?.descriptor ? Array.from(detection.descriptor) : null;
+  }
+
   function normalizedFaceName(value) {
     return String(value || '').replace(/\s+/g, ' ').trim()
       .replace(/^(ang pangalan ko ay|my name is|i am|ako si)\s+/i, '')
@@ -1608,18 +1625,31 @@
     try {
       await startFrontCamera();
       const embedding = await captureFaceEmbedding();
-      if (!geminiWs || geminiWs.readyState !== WebSocket.OPEN || !pendingFaceToolCallId) {
-        throw new Error('Voice connection is not ready');
+      const response = await fetch('/api/face/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ deviceId: FACE_DEVICE_ID, name: safeName, embedding }),
+      });
+      let profile;
+      try { profile = await response.json(); } catch { profile = {}; }
+      if (!response.ok || !profile.ok) {
+        throw new Error(profile.error || 'Face database is unavailable');
       }
-      geminiWs.send(JSON.stringify({
-        faceRegistration: {
-          deviceId: FACE_DEVICE_ID,
-          name: safeName,
-          embedding,
-          toolCallId: pendingFaceToolCallId,
-        }
-      }));
-      setFaceIdentityUi('Saving secure face embedding…', safeName);
+      if (geminiWs?.readyState === WebSocket.OPEN && pendingFaceToolCallId) {
+        geminiWs.send(JSON.stringify({
+          faceRegistrationComplete: { name: profile.name || safeName, toolCallId: pendingFaceToolCallId }
+        }));
+      }
+      pendingFaceToolCallId = null;
+      lastRecognizedFaceName = profile.name || safeName;
+      faceScanCandidate = '';
+      faceScanCandidateStreak = 0;
+      faceScanEmptyStreak = 0;
+      setFaceIdentityUi('Face saved in NeonDB', lastRecognizedFaceName);
+      showTranscript(`✅ Kilala na kita bilang ${lastRecognizedFaceName}.`);
+      setFaceRecognitionEnabled(true);
+      robotState = 'IDLE';
+      currentExpression = 'HAPPY';
     } catch (err) {
       console.warn('[FaceID] registration failed:', err.message);
       currentExpression = 'SAD';
@@ -1632,7 +1662,23 @@
     if (!faceRecognitionEnabled || faceScanBusy || !_frontReady || !_frontVideo) return;
     faceScanBusy = true;
     try {
-      const embedding = await captureFaceEmbedding();
+      const embedding = await captureFaceScanEmbedding();
+      if (!embedding) {
+        faceScanEmptyStreak++;
+        if (faceScanEmptyStreak >= FACE_SCAN_CONFIRMATIONS) {
+          faceScanCandidate = '';
+          faceScanCandidateStreak = 0;
+          if (lastRecognizedFaceName) {
+            lastRecognizedFaceName = '';
+            setFaceIdentityUi('Face not recognized', 'Guest');
+            if (geminiWs?.readyState === WebSocket.OPEN) {
+              geminiWs.send(JSON.stringify({ recognizedUser: { matched: false, name: '' } }));
+            }
+          }
+        }
+        return;
+      }
+      faceScanEmptyStreak = 0;
       const response = await fetch('/api/face/recognize', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1641,7 +1687,14 @@
       if (!response.ok) throw new Error('Face recognition service unavailable');
       const result = await response.json();
       const name = result.matched ? result.name : '';
-      if (name !== lastRecognizedFaceName) {
+      if (name === faceScanCandidate) faceScanCandidateStreak++;
+      else {
+        faceScanCandidate = name;
+        faceScanCandidateStreak = 1;
+      }
+      const shouldChangeIdentity = name !== lastRecognizedFaceName &&
+        faceScanCandidateStreak >= FACE_SCAN_CONFIRMATIONS;
+      if (shouldChangeIdentity) {
         lastRecognizedFaceName = name;
         setFaceIdentityUi(name ? `Recognized · ${Math.round(result.similarity * 100)}% match` : 'Face not recognized', name || 'Guest');
         if (geminiWs?.readyState === WebSocket.OPEN) {
@@ -1666,6 +1719,13 @@
     if (faceScanTimer) clearInterval(faceScanTimer);
     faceScanTimer = null;
     if (!faceRecognitionEnabled) {
+      lastRecognizedFaceName = '';
+      faceScanCandidate = '';
+      faceScanCandidateStreak = 0;
+      faceScanEmptyStreak = 0;
+      if (geminiWs?.readyState === WebSocket.OPEN) {
+        geminiWs.send(JSON.stringify({ recognizedUser: { matched: false, name: '' } }));
+      }
       setFaceIdentityUi('Scanning is off', lastRecognizedFaceName || 'Guest');
       return;
     }
@@ -1675,7 +1735,7 @@
       await loadFaceModels();
       setFaceIdentityUi('Scanning for a known face…');
       runFaceRecognitionScan();
-      faceScanTimer = setInterval(runFaceRecognitionScan, 4500);
+      faceScanTimer = setInterval(runFaceRecognitionScan, FACE_SCAN_INTERVAL_MS);
     } catch (err) {
       faceRecognitionEnabled = false;
       if (toggle) {
