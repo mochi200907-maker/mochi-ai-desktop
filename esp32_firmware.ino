@@ -198,25 +198,30 @@ unsigned long motorEnd = 0;
 bool aiRoamMode = false;
 unsigned long lastAiCommandAt = 0;
 #define AI_COMMAND_TIMEOUT_MS 1800UL
+#define DEFAULT_MOTOR_SPEED 128
 
 void rawStop() {
-  digitalWrite(MOTOR_A1, LOW); digitalWrite(MOTOR_A2, LOW);
-  digitalWrite(MOTOR_B1, LOW); digitalWrite(MOTOR_B2, LOW);
+  analogWrite(MOTOR_A1, 0); analogWrite(MOTOR_A2, 0);
+  analogWrite(MOTOR_B1, 0); analogWrite(MOTOR_B2, 0);
 }
 
-void drive(MotorState s, int ms) {
+void drive(MotorState s, int ms, int speed = DEFAULT_MOTOR_SPEED) {
   motorState = s;
   motorEnd   = millis() + ms;
+  uint8_t duty = (uint8_t)constrain(speed, 0, 255);
+  // The H-bridge inputs support PWM. Only the active direction pins receive
+  // duty cycle; the opposite pins stay low so direction cannot short.
+  rawStop();
   switch (s) {
-    case M_FORWARD:  digitalWrite(MOTOR_A1, HIGH); digitalWrite(MOTOR_A2, LOW);
-                     digitalWrite(MOTOR_B1, HIGH); digitalWrite(MOTOR_B2, LOW);  break;
-    case M_BACKWARD: digitalWrite(MOTOR_A1, LOW);  digitalWrite(MOTOR_A2, HIGH);
-                     digitalWrite(MOTOR_B1, LOW);  digitalWrite(MOTOR_B2, HIGH); break;
-    case M_LEFT:     digitalWrite(MOTOR_A1, LOW);  digitalWrite(MOTOR_A2, HIGH);
-                     digitalWrite(MOTOR_B1, HIGH); digitalWrite(MOTOR_B2, LOW);  break;
-    case M_RIGHT:    digitalWrite(MOTOR_A1, HIGH); digitalWrite(MOTOR_A2, LOW);
-                     digitalWrite(MOTOR_B1, LOW);  digitalWrite(MOTOR_B2, HIGH); break;
-    default: rawStop(); break;
+    case M_FORWARD:  analogWrite(MOTOR_A1, duty);
+                     analogWrite(MOTOR_B1, duty); break;
+    case M_BACKWARD: analogWrite(MOTOR_A2, duty);
+                     analogWrite(MOTOR_B2, duty); break;
+    case M_LEFT:     analogWrite(MOTOR_A2, duty);
+                     analogWrite(MOTOR_B1, duty); break;
+    case M_RIGHT:    analogWrite(MOTOR_A1, duty);
+                     analogWrite(MOTOR_B2, duty); break;
+    default: break;
   }
 }
 
@@ -409,12 +414,15 @@ void processPendingCommand() {
   String value = normalizeCommand(rawValue);
   Serial.print("[BLE] CMD raw: "); Serial.println(rawValue);
   Serial.print("[BLE] CMD normalized: "); Serial.println(value);
-  // Commands may be "FORWARD:100:600" (direction:speed:duration).
-  // The current motor driver is full-power digital; speed is accepted for
-  // protocol compatibility while duration is enforced for short AI steps.
+  // Commands may be "FORWARD:128:600" (direction:speed:duration).
   int firstSep = value.indexOf(':');
   String baseCommand = firstSep >= 0 ? value.substring(0, firstSep) : value;
   int secondSep = firstSep >= 0 ? value.indexOf(':', firstSep + 1) : -1;
+  int requestedSpeed = DEFAULT_MOTOR_SPEED;
+  if (firstSep >= 0) {
+    int speedEnd = secondSep >= 0 ? secondSep : value.length();
+    requestedSpeed = constrain(value.substring(firstSep + 1, speedEnd).toInt(), 0, 255);
+  }
   int requestedDuration = secondSep >= 0 ? value.substring(secondSep + 1).toInt() : 0;
   requestedDuration = constrain(requestedDuration, 0, 1500);
   value = baseCommand;
@@ -452,22 +460,22 @@ void processPendingCommand() {
   if      (value == "FORWARD") {
     cancelLookHold();
     lastAiCommandAt = aiRoamMode ? millis() : lastAiCommandAt;
-    drive(M_FORWARD, requestedDuration > 0 ? requestedDuration : 800);
+    drive(M_FORWARD, requestedDuration > 0 ? requestedDuration : 800, requestedSpeed);
   }
   else if (value == "BACKWARD") {
     cancelLookHold();
     lastAiCommandAt = aiRoamMode ? millis() : lastAiCommandAt;
-    drive(M_BACKWARD, requestedDuration > 0 ? requestedDuration : 800);
+    drive(M_BACKWARD, requestedDuration > 0 ? requestedDuration : 800, requestedSpeed);
   }
   else if (value == "LEFT") {
     cancelLookHold();
     lastAiCommandAt = aiRoamMode ? millis() : lastAiCommandAt;
-    drive(M_LEFT, requestedDuration > 0 ? requestedDuration : 400);
+    drive(M_LEFT, requestedDuration > 0 ? requestedDuration : 400, requestedSpeed);
   }
   else if (value == "RIGHT") {
     cancelLookHold();
     lastAiCommandAt = aiRoamMode ? millis() : lastAiCommandAt;
-    drive(M_RIGHT, requestedDuration > 0 ? requestedDuration : 400);
+    drive(M_RIGHT, requestedDuration > 0 ? requestedDuration : 400, requestedSpeed);
   }
   else if (value == "LOOK_UP")     holdHeadLook(120, 1.0f);
   else if (value == "LOOK_DOWN")   holdHeadLook(60,  1.0f);
