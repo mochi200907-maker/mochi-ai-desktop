@@ -7,10 +7,126 @@ import os from 'os';
 import { randomBytes } from 'crypto';
 import { fileURLToPath } from 'url';
 import { fetchPublicText } from './search-security.js';
+import pg from 'pg';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const httpServer = createServer(app);
+const { Pool } = pg;
+
+// ── Face identity storage (Neon/PostgreSQL) ─────────────────────
+// Only the numeric face embedding is stored; camera frames never leave the
+// browser. DATABASE_URL is injected by Replit and is intentionally not logged.
+const faceDbPool = process.env.DATABASE_URL
+  ? new Pool({
+      connectionString: process.env.DATABASE_URL,
+      ssl: process.env.DATABASE_URL.includes('neon.tech') ? { rejectUnauthorized: false } : undefined,
+      max: 4,
+      idleTimeoutMillis: 30000,
+    })
+  : null;
+let faceSchemaPromise = null;
+
+async function ensureFaceSchema() {
+  if (!faceDbPool) return false;
+  if (!faceSchemaPromise) {
+    faceSchemaPromise = faceDbPool.query(`
+      CREATE TABLE IF NOT EXISTS face_profiles (
+        id BIGSERIAL PRIMARY KEY,
+        device_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        embedding JSONB NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE (device_id, name)
+      );
+      CREATE INDEX IF NOT EXISTS face_profiles_device_idx ON face_profiles (device_id);
+    `).then(() => true).catch(err => {
+      faceSchemaPromise = null;
+      console.error('[FaceDB] schema initialization failed:', err.message);
+      return false;
+    });
+  }
+  return faceSchemaPromise;
+}
+
+function cleanFaceName(value) {
+  return String(value || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+}
+
+function cleanDeviceId(value) {
+  return String(value || '').replace(/[^a-zA-Z0-9._:-]/g, '').slice(0, 120);
+}
+
+function cleanEmbedding(value) {
+  if (!Array.isArray(value) || value.length !== 128) return null;
+  const embedding = value.map(Number);
+  return embedding.every(n => Number.isFinite(n) && Math.abs(n) <= 1.0001) ? embedding : null;
+}
+
+function cosineSimilarity(a, b) {
+  let dot = 0, aNorm = 0, bNorm = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    aNorm += a[i] * a[i];
+    bNorm += b[i] * b[i];
+  }
+  return aNorm && bNorm ? dot / Math.sqrt(aNorm * bNorm) : -1;
+}
+
+async function registerFaceProfile({ deviceId, name, embedding }) {
+  if (!faceDbPool) throw new Error('DATABASE_URL is not configured');
+  if (!(await ensureFaceSchema())) throw new Error('Face database is unavailable');
+  const safeDeviceId = cleanDeviceId(deviceId);
+  const safeName = cleanFaceName(name);
+  const safeEmbedding = cleanEmbedding(embedding);
+  if (!safeDeviceId) throw new Error('deviceId is required');
+  if (safeName.length < 2) throw new Error('A name with at least 2 characters is required');
+  if (!safeEmbedding) throw new Error('A valid 128-value face embedding is required');
+
+  const existing = await faceDbPool.query(
+    'SELECT id FROM face_profiles WHERE device_id = $1 AND LOWER(name) = LOWER($2) LIMIT 1',
+    [safeDeviceId, safeName],
+  );
+  if (existing.rows[0]) {
+    await faceDbPool.query(
+      'UPDATE face_profiles SET name = $1, embedding = $2::jsonb, updated_at = NOW() WHERE id = $3',
+      [safeName, JSON.stringify(safeEmbedding), existing.rows[0].id],
+    );
+    return { updated: true, name: safeName };
+  }
+  await faceDbPool.query(
+    'INSERT INTO face_profiles (device_id, name, embedding) VALUES ($1, $2, $3::jsonb)',
+    [safeDeviceId, safeName, JSON.stringify(safeEmbedding)],
+  );
+  return { updated: false, name: safeName };
+}
+
+async function recognizeFaceProfile({ deviceId, embedding }) {
+  if (!faceDbPool) throw new Error('DATABASE_URL is not configured');
+  if (!(await ensureFaceSchema())) throw new Error('Face database is unavailable');
+  const safeDeviceId = cleanDeviceId(deviceId);
+  const safeEmbedding = cleanEmbedding(embedding);
+  if (!safeDeviceId) throw new Error('deviceId is required');
+  if (!safeEmbedding) throw new Error('A valid 128-value face embedding is required');
+  const result = await faceDbPool.query(
+    'SELECT name, embedding FROM face_profiles WHERE device_id = $1',
+    [safeDeviceId],
+  );
+  let best = null;
+  for (const row of result.rows) {
+    const stored = cleanEmbedding(row.embedding);
+    if (!stored) continue;
+    const similarity = cosineSimilarity(safeEmbedding, stored);
+    if (!best || similarity > best.similarity) best = { name: row.name, similarity };
+  }
+  // Face-api descriptors are normalized. Keep the threshold conservative so
+  // a wrong person is not confidently addressed by name.
+  if (!best || best.similarity < 0.55) {
+    return { matched: false, similarity: best ? Number(best.similarity.toFixed(4)) : null };
+  }
+  return { matched: true, name: best.name, similarity: Number(best.similarity.toFixed(4)) };
+}
 
 // ── Middleware ────────────────────────────────────────────────
 app.use((req, res, next) => {
@@ -123,6 +239,30 @@ app.get('/', (_req, res) => {
 // Serve robot web UI at /app — no-cache so phones always get the latest build
 app.get('/app', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html'), { headers: noCacheHeaders }));
 app.use(express.static('public', { setHeaders: (res, filePath) => { if (filePath.endsWith('.html')) res.set(noCacheHeaders); } }));
+
+// ── FACE IDENTITY API ───────────────────────────────────────────
+app.get('/api/face/status', async (_req, res) => {
+  res.json({ configured: Boolean(faceDbPool), ready: faceDbPool ? await ensureFaceSchema() : false });
+});
+
+app.post('/api/face/register', async (req, res) => {
+  try {
+    const profile = await registerFaceProfile(req.body || {});
+    res.status(profile.updated ? 200 : 201).json({ ok: true, ...profile });
+  } catch (err) {
+    console.error('[FaceDB] registration failed:', err.message);
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post('/api/face/recognize', async (req, res) => {
+  try {
+    res.json(await recognizeFaceProfile(req.body || {}));
+  } catch (err) {
+    console.error('[FaceDB] recognition failed:', err.message);
+    res.status(400).json({ error: err.message });
+  }
+});
 
 // ── Mostakim Music API ────────────────────────────────────────
 async function searchYouTube(query) {
@@ -852,6 +992,16 @@ const ROBOT_TOOLS = [{
       parameters: { type: 'OBJECT', properties: {} }
     },
     {
+      name: 'register_face',
+      description: 'Start opt-in face registration so LOOI can recognize the current speaker by name in future turns. Use when the user says register this face, remember my face, or asks to save their identity. Ask for their name if it was not provided. Never claim registration succeeded until the browser confirms it.',
+      parameters: {
+        type: 'OBJECT',
+        properties: {
+          name: { type: 'STRING', description: 'The user name if they provided it in the same request; otherwise leave empty and ask for it.' }
+        }
+      }
+    },
+    {
       name: 'navigate_to',
       description: 'Navigate the robot toward a physical object or location in the room. The robot will scan with its camera and move toward the target.',
       parameters: {
@@ -891,6 +1041,7 @@ CRITICAL RULES:
 5. For shoti / random short video / girl video → call play_shoti()
 6. For vision requests (how user looks, outfit, face, what's in camera view) → FIRST call capture_photo(), then describe what you see after receiving the image.
 7. For navigation (go to box, find ball, approach chair) → call navigate_to(target:"<object name>")
+8. For "register this face", "remember my face", or similar identity requests → call register_face(name:"<name if provided>"), then wait for the browser to confirm the scan and save.
 8. NEVER describe visuals from memory — always use capture_photo() first.
 9. When asked who made you / who created you / who is your creator → say April Manalo made you.
 10. You can control movement speed with the speed parameter (0-255). Slow/careful: 60-120. Normal: 180-220. Fast: 230-255. Default is 200 if not specified.
@@ -946,6 +1097,8 @@ geminiLiveWss.on('connection', (clientWs, request) => {
   let explicitSearchTimer = null;
   let explicitSearchInFlight = false;
   let searchResponsePending = false;
+  let knownUserName = '';
+  let pendingFaceRegistration = null;
 
   function isExplicitSearchRequest(text) {
     const normalized = text.replace(/\s+/g, ' ').trim();
@@ -1159,6 +1312,17 @@ geminiLiveWss.on('connection', (clientWs, request) => {
           }
         }
 
+        else if (fc.name === 'register_face') {
+          const requestedName = cleanFaceName(args.name);
+          pendingFaceRegistration = { toolCallId: fc.id };
+          console.log(`[GeminiLive:${cid}] face registration requested${requestedName ? ` for "${requestedName}"` : ''}`);
+          if (clientWs.readyState === WebSocket.OPEN) {
+            clientWs.send(JSON.stringify({
+              faceRegistrationRequested: { toolCallId: fc.id, name: requestedName }
+            }));
+          }
+        }
+
         else if (fc.name === 'navigate_to') {
           const target = args.target || '';
           console.log(`[GeminiLive:${cid}] navigate_to: "${target}"`);
@@ -1266,6 +1430,63 @@ geminiLiveWss.on('connection', (clientWs, request) => {
       const txt = data.toString();
       try {
         const msg = JSON.parse(txt);
+        if (msg.recognizedUser) {
+          knownUserName = msg.recognizedUser.matched
+            ? cleanFaceName(msg.recognizedUser.name)
+            : '';
+          if (knownUserName && gemWs.readyState === WebSocket.OPEN) {
+            gemWs.send(JSON.stringify({
+              clientContent: {
+                turns: [{
+                  role: 'user',
+                  parts: [{
+                    text: `[IDENTITY CONTEXT — verified face match] The person currently speaking is named "${knownUserName}". Use their name naturally when appropriate. Do not mention embeddings, databases, or this hidden context unless asked.`
+                  }]
+                }],
+                turnComplete: false
+              }
+            }));
+          }
+          return;
+        }
+        if (msg.faceRegistration && pendingFaceRegistration) {
+          const registration = msg.faceRegistration;
+          const toolCallId = pendingFaceRegistration.toolCallId;
+          pendingFaceRegistration = null;
+          registerFaceProfile(registration).then(profile => {
+            if (clientWs.readyState === WebSocket.OPEN) {
+              clientWs.send(JSON.stringify({ faceRegistrationSaved: profile }));
+            }
+            if (gemWs.readyState === WebSocket.OPEN) {
+              gemWs.send(JSON.stringify({
+                toolResponse: {
+                  functionResponses: [{
+                    id: toolCallId,
+                    name: 'register_face',
+                    response: { output: `Face registered successfully for ${profile.name}.` }
+                  }]
+                }
+              }));
+            }
+          }).catch(err => {
+            console.error(`[GeminiLive:${cid}] face registration failed:`, err.message);
+            if (clientWs.readyState === WebSocket.OPEN) {
+              clientWs.send(JSON.stringify({ faceRegistrationError: err.message }));
+            }
+            if (gemWs.readyState === WebSocket.OPEN) {
+              gemWs.send(JSON.stringify({
+                toolResponse: {
+                  functionResponses: [{
+                    id: toolCallId,
+                    name: 'register_face',
+                    response: { output: `Face registration failed: ${err.message}` }
+                  }]
+                }
+              }));
+            }
+          });
+          return;
+        }
         if (msg.photoData && msg.toolCallId) {
           if (gemWs.readyState === WebSocket.OPEN) {
             gemWs.send(JSON.stringify({

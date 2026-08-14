@@ -20,6 +20,13 @@ App runs on **port 5000**. Open `http://<host>:5000/app` for the robot face UI.
 | Secret | Where to set |
 |---|---|
 | `GROQ_API_KEY` | Replit Secrets |
+| `GEMINI_API_KEY` | Replit Secrets — required for the live voice assistant and spoken face-registration command |
+| `DATABASE_URL` | Replit-managed Neon/PostgreSQL secret — required for face profile storage |
+
+## Face identity
+LOOI now supports opt-in face registration from the robot UI. Say “register this face,” then say your name while looking at the camera. The browser creates a 128-value face embedding with `face-api.js`; only that embedding and the name are stored in NeonDB, not the camera photo. Recognition is device-scoped through a local browser identifier, can be turned on/off with the Face identity toggle, and only sends a verified name context to Gemini after a match.
+
+The face models are loaded from the `face-api.js` CDN on first use, so the browser needs network access. A camera permission and a secure HTTPS preview are also required on phones.
 
 The server starts without the key but STT/LLM calls will fail until it's set.
 

@@ -827,6 +827,31 @@
       animation: searchOrbit 600ms linear infinite;
     }
     @keyframes searchOrbit { to { transform: rotate(360deg); } }
+    /* ── FACE IDENTITY CONTROL ── */
+    #face-identity-control {
+      position: absolute; top: max(44px,calc(env(safe-area-inset-top) + 34px)); right: max(12px,env(safe-area-inset-right));
+      z-index: 40; width: min(214px,calc(100vw - 24px)); padding: 10px 12px;
+      color: #c9f7ff; background: rgba(3,12,25,0.78); border: 1px solid rgba(97,211,255,0.28);
+      border-radius: 14px; backdrop-filter: blur(12px); box-shadow: 0 8px 28px rgba(0,0,0,0.25);
+    }
+    #face-identity-control .face-control-row { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+    #face-identity-control .face-label { font-size:10px; letter-spacing:1.5px; text-transform:uppercase; color:#8fb6c8; }
+    #face-identity-control .face-name { margin-top:3px; font-size:14px; font-weight:750; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    #face-scan-toggle { padding:6px 9px; border-radius:999px; font-size:10px; color:#03121a; background:#557080; }
+    #face-scan-toggle.on { background:#75f0cf; box-shadow:0 0 16px rgba(117,240,207,.35); }
+    #face-identity-status { display:block; margin-top:6px; font-size:10px; color:#87a6b6; }
+    #face-register-prompt {
+      position:fixed; z-index:180; left:50%; top:50%; transform:translate(-50%,-50%);
+      width:min(360px,calc(100vw - 32px)); padding:22px; border-radius:20px; color:#e8fbff;
+      background:rgba(4,12,27,.96); border:1px solid #61d3ff88; box-shadow:0 16px 60px #000b;
+    }
+    #face-register-prompt.hidden { display:none; }
+    #face-register-prompt h2 { font-size:20px; color:#bdf3ff; margin-bottom:8px; }
+    #face-register-prompt p { color:#91afc2; font-size:12px; line-height:1.5; margin-bottom:14px; }
+    #face-register-name { width:100%; padding:11px 13px; border:1px solid #61d3ff55; border-radius:10px; outline:none; background:#07162a; color:#e8fbff; font-size:15px; }
+    #face-register-prompt .face-prompt-actions { display:flex; gap:9px; margin-top:14px; }
+    #face-register-prompt button { flex:1; padding:10px 12px; font-size:13px; }
+    #face-register-cancel { background:#172536; color:#b5c6d5; }
     /* ── TRANSCRIPT / ERROR ── */
     #transcript-bar {
       position: absolute; bottom: max(16px,env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%);
@@ -930,10 +955,30 @@
     <div id="search-status" aria-live="polite">
       <span class="search-orbit"></span><span>SEARCHING WEB</span>
     </div>
+    <div id="face-identity-control" aria-live="polite">
+      <div class="face-control-row">
+        <div>
+          <div class="face-label">Face identity</div>
+          <div class="face-name" id="face-identity-name">Guest</div>
+        </div>
+        <button id="face-scan-toggle" type="button" aria-pressed="false">OFF</button>
+      </div>
+      <span id="face-identity-status">Scanning is off</span>
+    </div>
     <div id="transcript-bar"></div>
     <div id="error-toast"></div>
     <!-- LOOI DOM face (replaces canvas) -->
     <div id="faceCanvas"></div>
+  </div>
+
+  <div id="face-register-prompt" class="hidden" role="dialog" aria-modal="true" aria-labelledby="face-register-title">
+    <h2 id="face-register-title">Remember this face?</h2>
+    <p>Sabihin ang pangalan mo habang nakatingin sa camera. Face embedding lang ang ise-save sa NeonDB; hindi ise-save ang camera photo.</p>
+    <input id="face-register-name" type="text" autocomplete="name" placeholder="Pangalan mo" maxlength="80" />
+    <div class="face-prompt-actions">
+      <button id="face-register-start" type="button">Start scan</button>
+      <button id="face-register-cancel" type="button">Cancel</button>
+    </div>
   </div>
 
   <script>
@@ -1457,6 +1502,204 @@
     _frontStream=null; _frontVideo=null; console.log('[FrontCam] stopped');
   }
 
+  // ═══════════════════════════════════════════════════════════════
+  // FACE IDENTITY (opt-in, browser embedding + Neon profile lookup)
+  // ═══════════════════════════════════════════════════════════════
+  const FACE_DEVICE_ID = (() => {
+    const key = 'looi_face_device_id';
+    let id = localStorage.getItem(key);
+    if (!id) {
+      id = (crypto.randomUUID ? crypto.randomUUID() : `looi-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+      localStorage.setItem(key, id);
+    }
+    return id;
+  })();
+  const FACE_MODEL_URL = 'https://justadudewhohacks.github.io/face-api.js/models';
+  let faceModelsPromise = null;
+  let faceScanTimer = null;
+  let faceScanBusy = false;
+  let faceRecognitionEnabled = false;
+  let awaitingFaceRegistrationName = false;
+  let pendingFaceToolCallId = null;
+  let lastRecognizedFaceName = '';
+
+  function setFaceIdentityUi(status, name = lastRecognizedFaceName || 'Guest') {
+    const statusEl = document.getElementById('face-identity-status');
+    const nameEl = document.getElementById('face-identity-name');
+    if (statusEl) statusEl.textContent = status;
+    if (nameEl) nameEl.textContent = name || 'Guest';
+  }
+
+  async function loadFaceModels() {
+    if (faceModelsPromise) return faceModelsPromise;
+    faceModelsPromise = new Promise((resolve, reject) => {
+      if (window.faceapi) return resolve(window.faceapi);
+      const script = document.createElement('script');
+      script.src = 'https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js';
+      script.onload = () => window.faceapi ? resolve(window.faceapi) : reject(new Error('Face library unavailable'));
+      script.onerror = () => reject(new Error('Face library could not be loaded'));
+      document.head.appendChild(script);
+    }).then(async api => {
+      await Promise.all([
+        api.nets.tinyFaceDetector.loadFromUri(FACE_MODEL_URL),
+        api.nets.faceLandmark68Net.loadFromUri(FACE_MODEL_URL),
+        api.nets.faceRecognitionNet.loadFromUri(FACE_MODEL_URL),
+      ]);
+      return api;
+    }).catch(err => {
+      faceModelsPromise = null;
+      throw err;
+    });
+    return faceModelsPromise;
+  }
+
+  async function captureFaceEmbedding() {
+    if (!_frontReady || !_frontVideo || _frontVideo.readyState < 2) {
+      if (!await startFrontCamera()) throw new Error('Camera unavailable');
+    }
+    const api = await loadFaceModels();
+    const samples = [];
+    for (let i = 0; i < 3; i++) {
+      const detection = await api.detectSingleFace(
+        _frontVideo,
+        new api.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.55 }),
+      ).withFaceLandmarks().withFaceDescriptor();
+      if (detection?.descriptor) samples.push(Array.from(detection.descriptor));
+      if (i < 2) await new Promise(resolve => setTimeout(resolve, 180));
+    }
+    if (!samples.length) throw new Error('Walang mukha na nakita. Tumingin sa camera at subukan ulit.');
+    const embedding = samples[0].map((_, index) => samples.reduce((sum, sample) => sum + sample[index], 0) / samples.length);
+    const magnitude = Math.sqrt(embedding.reduce((sum, value) => sum + value * value, 0)) || 1;
+    return embedding.map(value => value / magnitude);
+  }
+
+  function normalizedFaceName(value) {
+    return String(value || '').replace(/\s+/g, ' ').trim()
+      .replace(/^(ang pangalan ko ay|my name is|i am|ako si)\s+/i, '')
+      .slice(0, 80);
+  }
+
+  function openFaceRegistrationPrompt(name = '') {
+    const prompt = document.getElementById('face-register-prompt');
+    const input = document.getElementById('face-register-name');
+    if (!prompt || !input) return;
+    input.value = normalizedFaceName(name);
+    prompt.classList.remove('hidden');
+    if (name) setTimeout(() => beginFaceRegistration(name), 250);
+    else {
+      awaitingFaceRegistrationName = true;
+      setFaceIdentityUi('Sabihin ang pangalan habang nakatingin sa camera');
+      setTimeout(() => input.focus(), 50);
+    }
+  }
+
+  async function beginFaceRegistration(name) {
+    const safeName = normalizedFaceName(name);
+    if (safeName.length < 2) {
+      openFaceRegistrationPrompt();
+      showError('Kailangan ko muna ang pangalan mo.');
+      return;
+    }
+    awaitingFaceRegistrationName = false;
+    document.getElementById('face-register-prompt')?.classList.add('hidden');
+    robotState = 'THINKING';
+    currentExpression = 'SCANNING';
+    setFaceIdentityUi('Scanning facial structure…', safeName);
+    try {
+      await startFrontCamera();
+      const embedding = await captureFaceEmbedding();
+      if (!geminiWs || geminiWs.readyState !== WebSocket.OPEN || !pendingFaceToolCallId) {
+        throw new Error('Voice connection is not ready');
+      }
+      geminiWs.send(JSON.stringify({
+        faceRegistration: {
+          deviceId: FACE_DEVICE_ID,
+          name: safeName,
+          embedding,
+          toolCallId: pendingFaceToolCallId,
+        }
+      }));
+      setFaceIdentityUi('Saving secure face embedding…', safeName);
+    } catch (err) {
+      console.warn('[FaceID] registration failed:', err.message);
+      currentExpression = 'SAD';
+      setFaceIdentityUi('Scan failed — try again');
+      showError(err.message || 'Hindi nagtagumpay ang face scan.');
+    }
+  }
+
+  async function runFaceRecognitionScan() {
+    if (!faceRecognitionEnabled || faceScanBusy || !_frontReady || !_frontVideo) return;
+    faceScanBusy = true;
+    try {
+      const embedding = await captureFaceEmbedding();
+      const response = await fetch('/api/face/recognize', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ deviceId: FACE_DEVICE_ID, embedding }),
+      });
+      if (!response.ok) throw new Error('Face recognition service unavailable');
+      const result = await response.json();
+      const name = result.matched ? result.name : '';
+      if (name !== lastRecognizedFaceName) {
+        lastRecognizedFaceName = name;
+        setFaceIdentityUi(name ? `Recognized · ${Math.round(result.similarity * 100)}% match` : 'Face not recognized', name || 'Guest');
+        if (geminiWs?.readyState === WebSocket.OPEN) {
+          geminiWs.send(JSON.stringify({ recognizedUser: { matched: Boolean(name), name, similarity: result.similarity } }));
+        }
+      }
+    } catch (err) {
+      if (!String(err.message).includes('Walang mukha')) console.warn('[FaceID] scan failed:', err.message);
+    } finally {
+      faceScanBusy = false;
+    }
+  }
+
+  async function setFaceRecognitionEnabled(enabled) {
+    faceRecognitionEnabled = Boolean(enabled);
+    const toggle = document.getElementById('face-scan-toggle');
+    if (toggle) {
+      toggle.classList.toggle('on', faceRecognitionEnabled);
+      toggle.textContent = faceRecognitionEnabled ? 'ON' : 'OFF';
+      toggle.setAttribute('aria-pressed', String(faceRecognitionEnabled));
+    }
+    if (faceScanTimer) clearInterval(faceScanTimer);
+    faceScanTimer = null;
+    if (!faceRecognitionEnabled) {
+      setFaceIdentityUi('Scanning is off', lastRecognizedFaceName || 'Guest');
+      return;
+    }
+    setFaceIdentityUi('Loading face scanner…');
+    try {
+      await startFrontCamera();
+      await loadFaceModels();
+      setFaceIdentityUi('Scanning for a known face…');
+      runFaceRecognitionScan();
+      faceScanTimer = setInterval(runFaceRecognitionScan, 4500);
+    } catch (err) {
+      faceRecognitionEnabled = false;
+      if (toggle) {
+        toggle.classList.remove('on');
+        toggle.textContent = 'OFF';
+        toggle.setAttribute('aria-pressed', 'false');
+      }
+      setFaceIdentityUi('Scanner unavailable');
+      showError(err.message || 'Hindi ma-load ang face scanner.');
+    }
+  }
+
+  document.getElementById('face-scan-toggle')?.addEventListener('click', () => {
+    setFaceRecognitionEnabled(!faceRecognitionEnabled);
+  });
+  document.getElementById('face-register-cancel')?.addEventListener('click', () => {
+    awaitingFaceRegistrationName = false;
+    document.getElementById('face-register-prompt')?.classList.add('hidden');
+    setFaceIdentityUi('Registration cancelled');
+  });
+  document.getElementById('face-register-start')?.addEventListener('click', () => {
+    beginFaceRegistration(document.getElementById('face-register-name')?.value || '');
+  });
+
   // ── LIVE FRAME STREAMING ─────────────────────────────────
   let _liveFrameTimer=null, _liveFrameCanvas=null;
   function startLiveFrameStream(){
@@ -1930,6 +2173,30 @@
         return;
       }
       if(msg.error){showError('Gemini: '+msg.error);robotState='IDLE';return;}
+      if(msg.faceRegistrationRequested){
+        pendingFaceToolCallId=msg.faceRegistrationRequested.toolCallId||null;
+        openFaceRegistrationPrompt(msg.faceRegistrationRequested.name||'');
+        showTranscript(msg.faceRegistrationRequested.name
+          ? `👁️ Tumingin sa camera — irerehistro ko si ${msg.faceRegistrationRequested.name}.`
+          : '👁️ Sabihin ang pangalan mo para ma-register ang mukha.');
+        return;
+      }
+      if(msg.faceRegistrationSaved){
+        pendingFaceToolCallId=null;
+        lastRecognizedFaceName=msg.faceRegistrationSaved.name||lastRecognizedFaceName;
+        setFaceIdentityUi('Face registered securely', lastRecognizedFaceName);
+        showTranscript(`✅ Kilala na kita bilang ${lastRecognizedFaceName}.`);
+        setFaceRecognitionEnabled(true);
+        robotState='IDLE'; currentExpression='HAPPY';
+        return;
+      }
+      if(msg.faceRegistrationError){
+        pendingFaceToolCallId=null;
+        setFaceIdentityUi('Registration failed');
+        showError('Face registration: '+msg.faceRegistrationError);
+        robotState='IDLE';
+        return;
+      }
       if(msg.needPhoto){
         robotState='THINKING'; currentExpression='CAMERA';
         showTranscript('📸 Taking a look...');
@@ -1986,7 +2253,14 @@
       const sc=msg.serverContent; if(!sc)return;
       if(sc.inputTranscription?.text){
         const t=sc.inputTranscription.text.trim();
-        if(t){console.log('[User]',t);robotState='THINKING';}
+        if(t){
+          console.log('[User]',t);
+          if(awaitingFaceRegistrationName && pendingFaceToolCallId) {
+            document.getElementById('face-register-name').value=normalizedFaceName(t);
+            beginFaceRegistration(t);
+          }
+          robotState='THINKING';
+        }
       }
       if(sc.modelTurn?.parts){
         // Hold model output during the search handoff. This prevents late
