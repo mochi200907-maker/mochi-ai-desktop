@@ -1020,7 +1020,7 @@ const ROBOT_TOOLS = [{
           },
           speed: {
             type: 'INTEGER',
-            description: 'Motor speed 0-255. Default 200. Use 60-120 for slow/careful, 180-220 normal, 230-255 fast.',
+            description: 'Motor speed 0-255. Default 128 (half power). Use 70-110 for slow/careful, 128-180 normal, 210-255 fast.',
             minimum: 0,
             maximum: 255
           }
@@ -1082,6 +1082,27 @@ const ROBOT_TOOLS = [{
       }
     },
     {
+      name: 'list_face_users',
+      description: 'List every face user registered on this device. Use when the user asks who the registered users are, asks for the user list, or says "sino ang mga user".',
+      parameters: { type: 'OBJECT', properties: {} }
+    },
+    {
+      name: 'clear_face_user',
+      description: 'Delete one registered face user by the exact name the user says. Use for requests such as "i-clear mo si Person 1". Do not use this for clearing everyone.',
+      parameters: {
+        type: 'OBJECT',
+        properties: {
+          name: { type: 'STRING', description: 'The exact registered user name to delete.' }
+        },
+        required: ['name']
+      }
+    },
+    {
+      name: 'clear_all_face_users',
+      description: 'Delete all face users registered on this device. Use when the user clearly says clear all users, lahat ng user, or similar.',
+      parameters: { type: 'OBJECT', properties: {} }
+    },
+    {
       name: 'navigate_to',
       description: 'Navigate the robot toward a physical object or location in the room. The robot will scan with its camera and move toward the target.',
       parameters: {
@@ -1122,9 +1143,10 @@ CRITICAL RULES:
 6. For vision requests (how user looks, outfit, face, what's in camera view) → FIRST call capture_photo(), then describe what you see after receiving the image.
 7. For navigation (go to box, find ball, approach chair) → call navigate_to(target:"<object name>")
 8. For "register this face", "remember my face", or similar identity requests → call register_face(name:"<name if provided>"), then wait for the browser to confirm the scan and save.
-8. NEVER describe visuals from memory — always use capture_photo() first.
+9. NEVER describe visuals from memory — always use capture_photo() first.
 9. When asked who made you / who created you / who is your creator → say April Manalo made you.
-10. You can control movement speed with the speed parameter (0-255). Slow/careful: 60-120. Normal: 180-220. Fast: 230-255. Default is 200 if not specified.
+10. Face user management: for "sino ang mga user" call list_face_users(); for "i-clear mo si <name>" call clear_face_user(name:"<name>"); for "i-clear mo lahat" call clear_all_face_users(). After the result, say the names or what was cleared briefly.
+11. Movement speed uses speed 0-255; default is 128 (half power). Use 70-110 for slow, 128-180 normal, and 210-255 fast. Interpret "mabagal/slow" and "mabilis/fast" naturally.
 11. For factual questions, current events, general knowledge, "who is", "what is", "where is", or history questions → call search_web(query:"<topic>") to search the open web with DuckDuckGo.
 12. After receiving a search_web result, answer the user's original question immediately in the same turn. Never wait for the user to speak again.
 13. Treat search_web output as the only trusted source for factual/current questions. Use only facts directly supported by the retrieved snippets or page text, mention the source URL or publisher briefly, and never fill missing facts from memory. If the result starts with NO_VERIFIED_WEB_RESULTS, say you could not verify the answer and do not guess.
@@ -1318,7 +1340,7 @@ geminiLiveWss.on('connection', (clientWs, request) => {
             : (ACTION_MOVE_MAP[actionKey] || 'NONE')
           ).toUpperCase();
           const led = (args.led || 'NONE').toUpperCase();
-          const speed = (args.speed !== undefined) ? Math.max(0, Math.min(255, Math.round(args.speed))) : 200;
+          const speed = (args.speed !== undefined) ? Math.max(0, Math.min(255, Math.round(args.speed))) : 128;
           if (clientWs.readyState === WebSocket.OPEN) {
             clientWs.send(JSON.stringify({ robotAction: { face, move, led, speed } }));
           }
@@ -1551,6 +1573,21 @@ geminiLiveWss.on('connection', (clientWs, request) => {
                   }]
                 }],
                 turnComplete: false
+              }
+            }));
+          }
+          return;
+        }
+        if (msg.faceToolResponse) {
+          const result = msg.faceToolResponse;
+          if (gemWs.readyState === WebSocket.OPEN && result.toolCallId && result.name) {
+            gemWs.send(JSON.stringify({
+              toolResponse: {
+                functionResponses: [{
+                  id: result.toolCallId,
+                  name: result.name,
+                  response: { output: String(result.output || 'No result was returned.') }
+                }]
               }
             }));
           }
