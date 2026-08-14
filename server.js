@@ -26,6 +26,8 @@ const faceDbPool = process.env.DATABASE_URL
     })
   : null;
 let faceSchemaPromise = null;
+const faceProfileCache = new Map();
+const FACE_PROFILE_CACHE_MS = 5000;
 
 async function ensureFaceSchema() {
   if (!faceDbPool) return false;
@@ -84,6 +86,7 @@ async function registerFaceProfile({ deviceId, name, embedding }) {
   if (safeName.length < 2) throw new Error('A name with at least 2 characters is required');
   if (!safeEmbedding) throw new Error('A valid 128-value face embedding is required');
 
+  const embeddingJson = JSON.stringify(safeEmbedding);
   const existing = await faceDbPool.query(
     'SELECT id FROM face_profiles WHERE device_id = $1 AND LOWER(name) = LOWER($2) LIMIT 1',
     [safeDeviceId, safeName],
@@ -91,15 +94,57 @@ async function registerFaceProfile({ deviceId, name, embedding }) {
   if (existing.rows[0]) {
     await faceDbPool.query(
       'UPDATE face_profiles SET name = $1, embedding = $2::jsonb, updated_at = NOW() WHERE id = $3',
-      [safeName, JSON.stringify(safeEmbedding), existing.rows[0].id],
+      [safeName, embeddingJson, existing.rows[0].id],
     );
+    faceProfileCache.delete(safeDeviceId);
     return { updated: true, name: safeName };
   }
   await faceDbPool.query(
     'INSERT INTO face_profiles (device_id, name, embedding) VALUES ($1, $2, $3::jsonb)',
-    [safeDeviceId, safeName, JSON.stringify(safeEmbedding)],
+    [safeDeviceId, safeName, embeddingJson],
   );
+  faceProfileCache.delete(safeDeviceId);
   return { updated: false, name: safeName };
+}
+
+async function listFaceProfiles({ deviceId }) {
+  if (!faceDbPool) throw new Error('DATABASE_URL is not configured');
+  if (!(await ensureFaceSchema())) throw new Error('Face database is unavailable');
+  const safeDeviceId = cleanDeviceId(deviceId);
+  if (!safeDeviceId) throw new Error('deviceId is required');
+  const result = await faceDbPool.query(
+    'SELECT name, created_at FROM face_profiles WHERE device_id = $1 ORDER BY LOWER(name) ASC',
+    [safeDeviceId],
+  );
+  return result.rows.map(row => ({ name: row.name, createdAt: row.created_at }));
+}
+
+async function clearFaceProfile({ deviceId, name }) {
+  if (!faceDbPool) throw new Error('DATABASE_URL is not configured');
+  if (!(await ensureFaceSchema())) throw new Error('Face database is unavailable');
+  const safeDeviceId = cleanDeviceId(deviceId);
+  const safeName = cleanFaceName(name);
+  if (!safeDeviceId) throw new Error('deviceId is required');
+  if (safeName.length < 2) throw new Error('A user name is required');
+  const result = await faceDbPool.query(
+    'DELETE FROM face_profiles WHERE device_id = $1 AND LOWER(name) = LOWER($2) RETURNING name',
+    [safeDeviceId, safeName],
+  );
+  faceProfileCache.delete(safeDeviceId);
+  return { cleared: Boolean(result.rows[0]), name: result.rows[0]?.name || safeName };
+}
+
+async function clearAllFaceProfiles({ deviceId }) {
+  if (!faceDbPool) throw new Error('DATABASE_URL is not configured');
+  if (!(await ensureFaceSchema())) throw new Error('Face database is unavailable');
+  const safeDeviceId = cleanDeviceId(deviceId);
+  if (!safeDeviceId) throw new Error('deviceId is required');
+  const result = await faceDbPool.query(
+    'DELETE FROM face_profiles WHERE device_id = $1',
+    [safeDeviceId],
+  );
+  faceProfileCache.delete(safeDeviceId);
+  return { cleared: true, count: result.rowCount || 0 };
 }
 
 async function recognizeFaceProfile({ deviceId, embedding }) {
@@ -109,12 +154,20 @@ async function recognizeFaceProfile({ deviceId, embedding }) {
   const safeEmbedding = cleanEmbedding(embedding);
   if (!safeDeviceId) throw new Error('deviceId is required');
   if (!safeEmbedding) throw new Error('A valid 128-value face embedding is required');
-  const result = await faceDbPool.query(
-    'SELECT name, embedding FROM face_profiles WHERE device_id = $1',
-    [safeDeviceId],
-  );
+  const cached = faceProfileCache.get(safeDeviceId);
+  let profiles = cached && Date.now() - cached.createdAt < FACE_PROFILE_CACHE_MS
+    ? cached.profiles
+    : null;
+  if (!profiles) {
+    const result = await faceDbPool.query(
+      'SELECT name, embedding FROM face_profiles WHERE device_id = $1',
+      [safeDeviceId],
+    );
+    profiles = result.rows;
+    faceProfileCache.set(safeDeviceId, { createdAt: Date.now(), profiles });
+  }
   let best = null;
-  for (const row of result.rows) {
+  for (const row of profiles) {
     const stored = cleanEmbedding(row.embedding);
     if (!stored) continue;
     const similarity = cosineSimilarity(safeEmbedding, stored);
@@ -251,6 +304,33 @@ app.post('/api/face/register', async (req, res) => {
     res.status(profile.updated ? 200 : 201).json({ ok: true, ...profile });
   } catch (err) {
     console.error('[FaceDB] registration failed:', err.message);
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post('/api/face/list', async (req, res) => {
+  try {
+    res.json({ ok: true, users: await listFaceProfiles(req.body || {}) });
+  } catch (err) {
+    console.error('[FaceDB] list failed:', err.message);
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post('/api/face/clear', async (req, res) => {
+  try {
+    res.json({ ok: true, ...await clearFaceProfile(req.body || {}) });
+  } catch (err) {
+    console.error('[FaceDB] clear failed:', err.message);
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post('/api/face/clear-all', async (req, res) => {
+  try {
+    res.json({ ok: true, ...await clearAllFaceProfiles(req.body || {}) });
+  } catch (err) {
+    console.error('[FaceDB] clear-all failed:', err.message);
     res.status(400).json({ error: err.message });
   }
 });
@@ -1323,6 +1403,30 @@ geminiLiveWss.on('connection', (clientWs, request) => {
           }
         }
 
+        else if (fc.name === 'list_face_users') {
+          console.log(`[GeminiLive:${cid}] list_face_users requested`);
+          if (clientWs.readyState === WebSocket.OPEN) {
+            clientWs.send(JSON.stringify({ faceListRequested: { toolCallId: fc.id } }));
+          }
+        }
+
+        else if (fc.name === 'clear_face_user') {
+          const requestedName = cleanFaceName(args.name);
+          console.log(`[GeminiLive:${cid}] clear_face_user requested for "${requestedName}"`);
+          if (clientWs.readyState === WebSocket.OPEN) {
+            clientWs.send(JSON.stringify({
+              faceClearRequested: { toolCallId: fc.id, name: requestedName }
+            }));
+          }
+        }
+
+        else if (fc.name === 'clear_all_face_users') {
+          console.log(`[GeminiLive:${cid}] clear_all_face_users requested`);
+          if (clientWs.readyState === WebSocket.OPEN) {
+            clientWs.send(JSON.stringify({ faceClearAllRequested: { toolCallId: fc.id } }));
+          }
+        }
+
         else if (fc.name === 'navigate_to') {
           const target = args.target || '';
           console.log(`[GeminiLive:${cid}] navigate_to: "${target}"`);
@@ -1434,16 +1538,37 @@ geminiLiveWss.on('connection', (clientWs, request) => {
           knownUserName = msg.recognizedUser.matched
             ? cleanFaceName(msg.recognizedUser.name)
             : '';
-          if (knownUserName && gemWs.readyState === WebSocket.OPEN) {
+          if (gemWs.readyState === WebSocket.OPEN) {
+            const identityText = knownUserName
+              ? `[IDENTITY CONTEXT — verified face match] The person currently speaking is named "${knownUserName}". Use their name naturally when appropriate. Do not mention embeddings, databases, or this hidden context unless asked.`
+              : '[IDENTITY CONTEXT — no verified face match] The previously recognized person is no longer in view. Do not use or mention any previous person name.';
             gemWs.send(JSON.stringify({
               clientContent: {
                 turns: [{
                   role: 'user',
                   parts: [{
-                    text: `[IDENTITY CONTEXT — verified face match] The person currently speaking is named "${knownUserName}". Use their name naturally when appropriate. Do not mention embeddings, databases, or this hidden context unless asked.`
+                    text: identityText
                   }]
                 }],
                 turnComplete: false
+              }
+            }));
+          }
+          return;
+        }
+        if (msg.faceRegistrationComplete && pendingFaceRegistration) {
+          const registration = msg.faceRegistrationComplete;
+          const toolCallId = pendingFaceRegistration.toolCallId;
+          pendingFaceRegistration = null;
+          const registeredName = cleanFaceName(registration.name);
+          if (gemWs.readyState === WebSocket.OPEN) {
+            gemWs.send(JSON.stringify({
+              toolResponse: {
+                functionResponses: [{
+                  id: toolCallId,
+                  name: 'register_face',
+                  response: { output: `Face registered successfully for ${registeredName}.` }
+                }]
               }
             }));
           }
