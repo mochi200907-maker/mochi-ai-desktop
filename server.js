@@ -195,15 +195,16 @@ app.use(express.json({ limit: '50mb' }));
 const noCacheHeaders = { 'Cache-Control': 'no-cache, no-store, must-revalidate', Pragma: 'no-cache', Expires: '0' };
 
 // ── Gemini API Key Pool ───────────────────────────────────────
-// Reads GEMINI_API_KEY, GEMINI_API_KEY_2, GEMINI_API_KEY_3 … up to _10
-// Rotates automatically when a key hits its daily quota limit.
+// Reads GEMINI_API_KEY plus both GEMINI_API_KEY2 and GEMINI_API_KEY_2
+// spellings (the Replit secret picker commonly creates the no-underscore
+// spelling). Rotates automatically when a key hits its daily quota limit.
 function _loadApiKeys() {
   const clean = s => (s || '').replace(/[\u200e\u200f\u200b\u200c\u200d\uFEFF]/g, '').trim();
   const keys = [];
   const k1 = clean(process.env.GEMINI_API_KEY);
   if (k1) keys.push(k1);
   for (let i = 2; i <= 10; i++) {
-    const k = clean(process.env[`GEMINI_API_KEY_${i}`]);
+    const k = clean(process.env[`GEMINI_API_KEY_${i}`] || process.env[`GEMINI_API_KEY${i}`]);
     if (k) keys.push(k);
   }
   return keys;
@@ -281,7 +282,7 @@ app.get('/', (_req, res) => {
     <div class="stat"><span class="label">Uptime</span><span class="value">${uptimeStr}</span></div>
     <div class="stat"><span class="label">Voice / LLM</span><span class="value">Gemini Live ✓</span></div>
     <div class="stat"><span class="label">Vision</span><span class="value">Gemini Flash ✓</span></div>
-    <div class="stat"><span class="label">WebSocket</span><span class="value">/ws/gemini ✓</span></div>
+     <div class="stat"><span class="label">WebSocket</span><span class="value">/ws/gemini + /ws/esp32 ✓</span></div>
     <div class="stat"><span class="label">API Keys</span><span class="value" style="color:${keyPoolStatus().available>0?'#00e5a0':'#ff4444'}">${keyPoolStatus().available}/${keyPoolStatus().total} available</span></div>
     <a href="/app" class="btn">Open Robot Web UI →</a>
   </div>
@@ -670,6 +671,16 @@ async function searchDuckDuckGo(query, _getSummary = true) {
 
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 
+app.get('/api/gemini/status', (_req, res) => {
+  const pool = keyPoolStatus();
+  res.json({
+    ok: pool.available > 0,
+    configured: pool.total > 0,
+    ...pool,
+    endpoints: { phone: '/ws/gemini', esp32: '/ws/esp32' },
+  });
+});
+
 app.get('/api/music/url', async (req, res) => {
   const q = req.query.q?.trim();
   if (!q) return res.status(400).json({ error: 'q param required' });
@@ -987,6 +998,7 @@ LEFT, CENTER, RIGHT, or NOTFOUND`;
 const GEMINI_LIVE_URL = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent';
 
 const geminiLiveWss = new WebSocketServer({ noServer: true });
+const esp32LiveWss = new WebSocketServer({ noServer: true });
 
 const ROBOT_TOOLS = [{
   functionDeclarations: [
@@ -1165,6 +1177,11 @@ Examples:
 - User asks for a kiss → run_scenario(action:"kiss")
 - User asks a question → run_scenario(action:"question")`;
 
+const GEMINI_ESP32_SYSTEM = `${GEMINI_LIVE_SYSTEM}
+
+HARDWARE CONNECTION:
+You are speaking through the LOOI ESP32 robot over the server bridge. This connection has a microphone, speaker, motors, servo, and LED only; it has no camera, browser, or media decoder. Do not call camera, face, web-search, music, video, or TikTok tools in this hardware session. For unsupported requests, explain briefly that the phone/web UI can do that. Keep spoken responses short.`;
+
 const ACTION_FACE_MAP = {
   follow_target: 'SCANNING', take_picture: 'CAMERA', eating: 'BURGER', drinking: 'JUICE',
   angry: 'ANGRY', loving: 'LOVING', happy: 'HAPPY', sad: 'SAD', wink: 'WINK',
@@ -1179,11 +1196,24 @@ const ACTION_MOVE_MAP = {
   look_up: 'LOOK_UP', look_down: 'LOOK_DOWN', look_center: 'LOOK_CENTER'
 };
 
-geminiLiveWss.on('connection', (clientWs, request) => {
+function isGeminiKeyFailure(value) {
+  const text = String(value || '').toLowerCase();
+  return text.includes('quota') || text.includes('resource_exhausted') ||
+    text.includes('rate limit') || text.includes('unauthenticated') ||
+    text.includes('permission denied') || text.includes('invalid api key') ||
+    text.includes('api key') || text.includes('401') || text.includes('403') ||
+    text.includes('429');
+}
+
+function attachGeminiLive(clientWs, request, { target = 'web' } = {}) {
+  const isEsp32 = target === 'esp32';
   const apiKey = getActiveKey();
   if (!apiKey) {
-    try { clientWs.send(JSON.stringify({ error: 'All API keys have hit their daily quota. Try again later.' })); } catch {}
-    clientWs.close(1011, 'All API keys exhausted');
+    const message = API_KEYS.length === 0
+      ? 'Gemini API key is not configured on this project. Add GEMINI_API_KEY in Replit Secrets.'
+      : 'All Gemini API keys have hit their daily quota. Try again later.';
+    try { clientWs.send(JSON.stringify({ error: message })); } catch {}
+    clientWs.close(1011, message);
     return;
   }
 
@@ -1201,6 +1231,7 @@ geminiLiveWss.on('connection', (clientWs, request) => {
   let searchResponsePending = false;
   let knownUserName = '';
   let pendingFaceRegistration = null;
+  let quotaFailure = false;
 
   function isExplicitSearchRequest(text) {
     const normalized = text.replace(/\s+/g, ' ').trim();
@@ -1311,8 +1342,11 @@ geminiLiveWss.on('connection', (clientWs, request) => {
         },
         inputAudioTranscription: {},
         outputAudioTranscription: {},
-        tools: ROBOT_TOOLS,
-        systemInstruction: { parts: [{ text: GEMINI_LIVE_SYSTEM }] }
+        // The ESP has no browser/camera/media decoder. Keep unsupported tools
+        // out of its session so a tool call can never wait for a response that
+        // the firmware cannot provide. The phone keeps the complete tool set.
+        tools: isEsp32 ? [ROBOT_TOOLS[0]] : ROBOT_TOOLS,
+        systemInstruction: { parts: [{ text: isEsp32 ? GEMINI_ESP32_SYSTEM : GEMINI_LIVE_SYSTEM }] }
       }
     }));
   });
@@ -1323,6 +1357,19 @@ geminiLiveWss.on('connection', (clientWs, request) => {
     try { msg = JSON.parse(str); } catch { return; }
     if (msg.error) {
       console.error(`[GeminiLive:${cid}] upstream error:`, JSON.stringify(msg.error));
+      const errorText = JSON.stringify(msg.error);
+      if (isGeminiKeyFailure(errorText)) {
+        quotaFailure = true;
+        markKeyExhausted(apiKey);
+        try {
+          if (clientWs.readyState === WebSocket.OPEN) {
+            clientWs.send(JSON.stringify({
+              error: 'Gemini key quota/auth error — switching to the next server key.'
+            }));
+          }
+        } catch {}
+        if (gemWs.readyState < 2) gemWs.close(1011, 'Gemini key exhausted');
+      }
     }
 
     // ── Tool calls from Gemini ────────────────────────────────────
@@ -1556,6 +1603,15 @@ geminiLiveWss.on('connection', (clientWs, request) => {
       const txt = data.toString();
       try {
         const msg = JSON.parse(txt);
+        // ESP32 sends device metadata so the bridge can identify the audio
+        // format. This is a server-side message, not part of Gemini Live's
+        // clientContent protocol, so never forward it upstream.
+        if (msg.deviceHello) {
+          if (isEsp32) {
+            console.log(`[GeminiLive:${cid}] ESP32 device hello received`);
+          }
+          return;
+        }
         if (msg.recognizedUser) {
           knownUserName = msg.recognizedUser.matched
             ? cleanFaceName(msg.recognizedUser.name)
@@ -1706,19 +1762,35 @@ geminiLiveWss.on('connection', (clientWs, request) => {
     const msg = reason?.toString?.() || '';
     console.log(`[GeminiLive:${cid}] Gemini closed ${code} ${msg || '(no reason provided)'}`);
     // Quota exceeded → mark this key exhausted so the next connection uses a different key
-    if (msg.toLowerCase().includes('quota') || msg.toLowerCase().includes('resource_exhausted')) {
-      markKeyExhausted(apiKey);
-      try { clientWs.send(JSON.stringify({ error: 'API quota exceeded — switching to next key, please reconnect.' })); } catch {}
+    if (quotaFailure || isGeminiKeyFailure(msg) || code === 1008) {
+      if (!quotaFailure) markKeyExhausted(apiKey);
+      try {
+        if (clientWs.readyState === WebSocket.OPEN) {
+          clientWs.send(JSON.stringify({ error: 'API quota exceeded — switching to next key, please reconnect.' }));
+        }
+      } catch {}
     }
     if (clientWs.readyState < 2) clientWs.close(1011, 'Gemini closed');
   });
   gemWs.on('error', err => {
     console.error(`[GeminiLive:${cid}] upstream websocket error:`, err.message);
+    if (isGeminiKeyFailure(err.message)) {
+      quotaFailure = true;
+      markKeyExhausted(apiKey);
+    }
     if (clientWs.readyState < 2) {
       try { clientWs.send(JSON.stringify({ error: err.message })); } catch {}
       clientWs.close(1011, err.message);
     }
   });
+}
+
+geminiLiveWss.on('connection', (clientWs, request) => {
+  attachGeminiLive(clientWs, request, { target: 'web' });
+});
+
+esp32LiveWss.on('connection', (clientWs, request) => {
+  attachGeminiLive(clientWs, request, { target: 'esp32' });
 });
 
 // ── WebSocket upgrade ─────────────────────────────────────────
@@ -1728,6 +1800,10 @@ httpServer.on('upgrade', (request, socket, head) => {
     geminiLiveWss.handleUpgrade(request, socket, head, (ws) => {
       geminiLiveWss.emit('connection', ws, request);
     });
+  } else if (pathname === '/ws/esp32') {
+    esp32LiveWss.handleUpgrade(request, socket, head, (ws) => {
+      esp32LiveWss.emit('connection', ws, request);
+    });
   } else {
     socket.destroy();
   }
@@ -1736,5 +1812,5 @@ httpServer.on('upgrade', (request, socket, head) => {
 // ── Start ─────────────────────────────────────────────────────
 const PORT = process.env.PORT || 5000;
 httpServer.listen(PORT, '0.0.0.0', () =>
-  console.log(`🤖 Mochi Robot Server running on port ${PORT} (HTTP + WS /ws/gemini)`)
+  console.log(`🤖 Mochi Robot Server running on port ${PORT} (HTTP + WS /ws/gemini + /ws/esp32)`)
 );
